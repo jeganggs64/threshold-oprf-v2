@@ -26,6 +26,7 @@
 mod attestation;
 mod rate_limit;
 mod reshare_handler;
+mod snp_endpoint;
 
 use std::env;
 use std::io::BufReader;
@@ -60,6 +61,11 @@ pub struct NodeState {
     /// Tracks attestation report digests already processed by /reshare
     /// to prevent replay attacks. Entries are evicted after RESHARE_SEEN_TTL.
     pub reshare_seen: std::sync::Mutex<Vec<([u8; 32], std::time::Instant)>>,
+    /// Cached AMD SEV-SNP attestation report served by GET /attestation.
+    /// None in dev/test environments without real SNP hardware.
+    pub cached_attestation: std::sync::RwLock<Option<snp_endpoint::AttestationResponse>>,
+    /// Per-device rate limiter for /partial-evaluate (max 5 evaluations per day).
+    pub rate_limiter: rate_limit::RateLimiter,
 }
 
 pub(crate) struct LoadedKey {
@@ -243,6 +249,8 @@ async fn main() {
     let state = Arc::new(NodeState {
         loaded_key: OnceLock::new(),
         reshare_seen: std::sync::Mutex::new(Vec::with_capacity(64)),
+        cached_attestation: std::sync::RwLock::new(None),
+        rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
     });
 
     // -- Load key from file (testing/dev) --
@@ -305,6 +313,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/attestation", get(snp_endpoint::attestation_handler))
         .route("/partial-evaluate", post(eval))
         .route("/reshare", post(reshare_handler::reshare_handler))
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
