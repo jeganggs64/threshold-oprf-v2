@@ -23,6 +23,7 @@
 //!   PORT                        — HTTP listen port (default: 3001)
 //!   EXPECTED_VERIFICATION_SHARE — hex-encoded k_i * G for key verification
 
+mod attestation;
 mod rate_limit;
 mod reshare_handler;
 
