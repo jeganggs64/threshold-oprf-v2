@@ -2465,8 +2465,6 @@ dependencies = [
  "hex",
  "hmac",
  "k256",
- "rand 0.8.5",
- "reqwest",
  "rustls",
  "rustls-pemfile",
  "serde",
