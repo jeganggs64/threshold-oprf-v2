@@ -2442,6 +2442,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "toprf-dkg-node"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "frost-secp256k1",
+ "hex",
+ "k256",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "toprf-core",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "toprf-keygen"
 version = "0.1.0"
 dependencies = [
