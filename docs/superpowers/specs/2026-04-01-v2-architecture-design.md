@@ -197,7 +197,7 @@ $ toprf-dkg init \
     --production-nodes https://node1.url,https://node2.url,https://node3.url \
     --threshold 2 \
     --registry-contract 0xabc... \
-    --rpc https://arb1.arbitrum.io/rpc \
+    --rpc https://arb1.base.io/rpc \
     --deployer-key 0x...
 
 Setup:
@@ -266,7 +266,7 @@ Verifiability: each DKG node's commitment is bound to its TEE attestation report
 
 ## On-Chain Registry Contract
 
-Deployed once on Arbitrum or Base. Write-once: records the DKG, finalizes, done forever. The deployer key can be discarded after finalization.
+Deployed once on Base. Write-once: records the DKG, finalizes, done forever. The deployer key can be discarded after finalization.
 
 The contract's sole purpose: immutable proof that DKG happened and no one held the master key.
 
@@ -343,8 +343,8 @@ Static JSON file served from `ruonid-frontend`. Discovery and operational config
     "sha384:bbb..."
   ],
   "registryContract": {
-    "chain": "arbitrum",
-    "chainId": 42161,
+    "chain": "base",
+    "chainId": 8453,
     "address": "0xdef..."
   },
   "sourceRepo": "https://github.com/ruonlabs/threshold-oprf",
@@ -584,7 +584,7 @@ Standalone tool for independent system verification. Ships in the `threshold-opr
 $ toprf-verify --endpoint https://ruonlabs.com/.well-known/toprf-nodes.json
 
 Fetching node manifest... done
-Reading on-chain registry (arbitrum:0xdef...)... done
+Reading on-chain registry (base:0xdef...)... done
 
 DKG verification:
   Node 1: commitment on-chain ✓, consistent with group key ✓

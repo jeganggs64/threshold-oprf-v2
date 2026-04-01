@@ -1899,8 +1899,8 @@ function verifyCertChain(certChainBytes: Uint8Array, reportBytes: Uint8Array): v
   "expectedBinaryHash": "sha256:...",
   "approvedMeasurements": ["sha384:..."],
   "registryContract": {
-    "chain": "arbitrum",
-    "chainId": 42161,
+    "chain": "base",
+    "chainId": 8453,
     "address": "0x..."
   },
   "sourceRepo": "https://github.com/ruonlabs/threshold-oprf",
