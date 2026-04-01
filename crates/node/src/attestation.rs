@@ -44,6 +44,7 @@ pub enum AttestationError {
     Invalid(String),
     #[error("client data hash mismatch")]
     ClientDataHashMismatch,
+    #[allow(dead_code)] // Used when Google Play Integrity verification is implemented
     #[error("Google API error: {0}")]
     GoogleApiError(String),
 }

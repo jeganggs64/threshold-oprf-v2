@@ -73,6 +73,7 @@ pub struct NodeState {
     pub join_in_progress: std::sync::Mutex<()>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct LoadedKey {
     pub(crate) node_id: u16,
     pub(crate) key_share: Scalar,

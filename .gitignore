@@ -1,6 +1,9 @@
 # OS files
 .DS_Store
 
+# Superpowers (specs, plans — internal tooling)
+docs/superpowers/
+
 # Generated TLS certificates
 certs/
 
