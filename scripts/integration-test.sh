@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Integration test for threshold-OPRF system.
+# Integration test for threshold-OPRF system (simplified node architecture).
 #
-# Builds the workspace, generates keys, starts 3 nodes with coordinator
-# configs, and runs end-to-end HTTP tests via /evaluate (coordinator mode).
+# Builds the workspace, generates keys, starts 3 identical nodes (no coordinator),
+# and runs end-to-end HTTP tests via /partial-evaluate (per-node evaluation mode).
 #
 set -euo pipefail
 
@@ -21,6 +21,24 @@ NODE3_PORT=7103
 PIDS=()
 PASS=0
 FAIL=0
+
+# ---------- sha256 helper ----------
+
+# Use shasum on macOS, sha256sum on Linux.
+sha256_hex() {
+    # Reads from stdin, outputs a 64-char hex digest.
+    if command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    else
+        sha256sum | cut -d' ' -f1
+    fi
+}
+
+# Compute sha256 of the raw bytes represented by a hex string.
+# Usage: hex_bytes_sha256 <hex_string>
+hex_bytes_sha256() {
+    printf '%s' "$1" | xxd -r -p | sha256_hex
+}
 
 # ---------- cleanup ----------
 
@@ -127,54 +145,10 @@ TOTAL_SHARES=$(jq -r '.total_shares' "$PUBLIC_CONFIG")
 echo "  Group public key: $GROUP_PUBLIC_KEY"
 echo "  Threshold: $THRESHOLD, Total shares: $TOTAL_SHARES"
 
-# Extract verification shares per node
-VS_1=$(jq -r '.verification_shares[] | select(.node_id == 1) | .verification_share' "$PUBLIC_CONFIG")
-VS_2=$(jq -r '.verification_shares[] | select(.node_id == 2) | .verification_share' "$PUBLIC_CONFIG")
-VS_3=$(jq -r '.verification_shares[] | select(.node_id == 3) | .verification_share' "$PUBLIC_CONFIG")
-
-echo "  Verification shares extracted for nodes 1, 2, 3."
-
-# ---------- 3. Create coordinator configs ----------
+# ---------- 3. Start 3 node servers ----------
 
 echo ""
-echo "=== Step 3: Creating coordinator configs ==="
-
-# Node 1: peers are node 2 and node 3
-cat > "$TMPDIR/coord-1.json" <<EOF
-{
-  "peers": [
-    {"node_id": 2, "endpoint": "http://127.0.0.1:$NODE2_PORT", "verification_share": "$VS_2"},
-    {"node_id": 3, "endpoint": "http://127.0.0.1:$NODE3_PORT", "verification_share": "$VS_3"}
-  ]
-}
-EOF
-
-# Node 2: peers are node 1 and node 3
-cat > "$TMPDIR/coord-2.json" <<EOF
-{
-  "peers": [
-    {"node_id": 1, "endpoint": "http://127.0.0.1:$NODE1_PORT", "verification_share": "$VS_1"},
-    {"node_id": 3, "endpoint": "http://127.0.0.1:$NODE3_PORT", "verification_share": "$VS_3"}
-  ]
-}
-EOF
-
-# Node 3: peers are node 1 and node 2
-cat > "$TMPDIR/coord-3.json" <<EOF
-{
-  "peers": [
-    {"node_id": 1, "endpoint": "http://127.0.0.1:$NODE1_PORT", "verification_share": "$VS_1"},
-    {"node_id": 2, "endpoint": "http://127.0.0.1:$NODE2_PORT", "verification_share": "$VS_2"}
-  ]
-}
-EOF
-
-echo "  Coordinator configs created."
-
-# ---------- 4. Start 3 node servers ----------
-
-echo ""
-echo "=== Step 4: Starting 3 node servers ==="
+echo "=== Step 3: Starting 3 node servers (no coordinator) ==="
 
 for i in 1 2 3; do
     SHARE_FILE="$NODE_SHARES_DIR/node-${i}-share.json"
@@ -185,17 +159,17 @@ for i in 1 2 3; do
 done
 
 "$NODE" --port $NODE1_PORT --key-file "$NODE_SHARES_DIR/node-1-share.json" \
-    --coordinator-config "$TMPDIR/coord-1.json" > "$TMPDIR/node1.log" 2>&1 &
+    > "$TMPDIR/node1.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 1 started (PID $!, port $NODE1_PORT)"
 
 "$NODE" --port $NODE2_PORT --key-file "$NODE_SHARES_DIR/node-2-share.json" \
-    --coordinator-config "$TMPDIR/coord-2.json" > "$TMPDIR/node2.log" 2>&1 &
+    > "$TMPDIR/node2.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 2 started (PID $!, port $NODE2_PORT)"
 
 "$NODE" --port $NODE3_PORT --key-file "$NODE_SHARES_DIR/node-3-share.json" \
-    --coordinator-config "$TMPDIR/coord-3.json" > "$TMPDIR/node3.log" 2>&1 &
+    > "$TMPDIR/node3.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 3 started (PID $!, port $NODE3_PORT)"
 
@@ -204,110 +178,159 @@ wait_for_health "http://127.0.0.1:$NODE1_PORT/health" "Node 1"
 wait_for_health "http://127.0.0.1:$NODE2_PORT/health" "Node 2"
 wait_for_health "http://127.0.0.1:$NODE3_PORT/health" "Node 3"
 
-# ---------- 5. Run test requests ----------
+# ---------- 4. Test health ----------
 
 echo ""
-echo "=== Step 5: Running tests ==="
+echo "=== Step 4: Testing /health ==="
 
-# 5a. GET /health on node 1
-echo ""
-echo "--- Test 5a: GET /health ---"
-HEALTH_RESP=$(curl -sf "http://127.0.0.1:$NODE1_PORT/health")
-HEALTH_STATUS=$(echo "$HEALTH_RESP" | jq -r '.status')
-assert_eq "node 1 health status is 'ready'" "ready" "$HEALTH_STATUS"
+for i in 1 2 3; do
+    port_var="NODE${i}_PORT"
+    port="${!port_var}"
+    HEALTH_RESP=$(curl -sf "http://127.0.0.1:$port/health")
+    HEALTH_STATUS=$(printf '%s' "$HEALTH_RESP" | jq -r '.status')
+    assert_eq "node $i health status is 'ready'" "ready" "$HEALTH_STATUS"
 
-HEALTH_COORDINATOR=$(echo "$HEALTH_RESP" | jq -r '.coordinator')
-assert_eq "node 1 is coordinator" "true" "$HEALTH_COORDINATOR"
+    NODE_ID_FIELD=$(printf '%s' "$HEALTH_RESP" | jq -r '.node_id')
+    assert_eq "node $i health node_id is $i" "$i" "$NODE_ID_FIELD"
 
-# 5b. GET /info on node 1
-echo ""
-echo "--- Test 5b: GET /info ---"
-INFO_RESP=$(curl -sf "http://127.0.0.1:$NODE1_PORT/info")
-INFO_NODE_ID=$(echo "$INFO_RESP" | jq -r '.node_id')
-assert_eq "node 1 info node_id is 1" "1" "$INFO_NODE_ID"
-
-INFO_GPK=$(echo "$INFO_RESP" | jq -r '.group_public_key')
-assert_eq "node 1 group_public_key matches" "$GROUP_PUBLIC_KEY" "$INFO_GPK"
-
-# 5c. POST /evaluate on node 1 (coordinator mode)
-echo ""
-echo "--- Test 5c: POST /evaluate (coordinator) ---"
-
-# Use the secp256k1 generator point as a valid test blinded point
-TEST_BLINDED_POINT="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-
-EVAL_HTTP_CODE=$(curl -s -o "$TMPDIR/eval_resp.json" -w "%{http_code}" \
-    -X POST "http://127.0.0.1:$NODE1_PORT/evaluate" \
-    -H "Content-Type: application/json" \
-    -d "{\"blinded_point\": \"$TEST_BLINDED_POINT\"}")
-
-if [[ "$EVAL_HTTP_CODE" != "200" ]]; then
-    echo "  DEBUG: evaluate returned HTTP $EVAL_HTTP_CODE"
-    echo "  DEBUG: response body: $(cat "$TMPDIR/eval_resp.json" 2>/dev/null)"
-    echo "  DEBUG: node 1 log (last 20 lines):"
-    tail -20 "$TMPDIR/node1.log" 2>/dev/null || echo "(no log)"
-fi
-assert_eq "evaluate returns 200" "200" "$EVAL_HTTP_CODE"
-
-if [[ -f "$TMPDIR/eval_resp.json" ]]; then
-    EVAL_RESP=$(cat "$TMPDIR/eval_resp.json")
-
-    # Check evaluation point
-    EVALUATION=$(echo "$EVAL_RESP" | jq -r '.evaluation')
-    assert_match "evaluation is valid compressed point" '^(02|03)[0-9a-f]{64}$' "$EVALUATION"
-
-    # Check partials
-    PARTIALS_COUNT=$(echo "$EVAL_RESP" | jq '.partials | length')
-    assert_eq "partials array has 2 entries" "2" "$PARTIALS_COUNT"
-
-    # 5d. Verify each partial_point is a valid compressed secp256k1 point
-    echo ""
-    echo "--- Test 5d: Verify partial points ---"
-    for idx in 0 1; do
-        NODE_ID=$(echo "$EVAL_RESP" | jq -r ".partials[$idx].node_id")
-        PARTIAL_POINT=$(echo "$EVAL_RESP" | jq -r ".partials[$idx].partial_point")
-        assert_match "partial from node $NODE_ID is valid compressed point" \
-            '^(02|03)[0-9a-f]{64}$' "$PARTIAL_POINT"
-
-        # Verify DLEQ proof fields exist
-        CHALLENGE=$(echo "$EVAL_RESP" | jq -r ".partials[$idx].dleq_proof.challenge")
-        RESPONSE=$(echo "$EVAL_RESP" | jq -r ".partials[$idx].dleq_proof.response")
-        assert_match "DLEQ challenge from node $NODE_ID is 64 hex" '^[0-9a-f]{64}$' "$CHALLENGE"
-        assert_match "DLEQ response from node $NODE_ID is 64 hex" '^[0-9a-f]{64}$' "$RESPONSE"
-    done
-else
-    echo "  FAIL: evaluate response file not found"
-    FAIL=$((FAIL + 1))
-fi
-
-# 5e. Test coordinator on all 3 nodes (each can coordinate)
-echo ""
-echo "--- Test 5e: All nodes can coordinate ---"
-for port in $NODE1_PORT $NODE2_PORT $NODE3_PORT; do
-    EVAL_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST "http://127.0.0.1:$port/evaluate" \
-        -H "Content-Type: application/json" \
-        -d "{\"blinded_point\": \"$TEST_BLINDED_POINT\"}")
-    assert_eq "node at port $port can coordinate (200)" "200" "$EVAL_CODE"
+    # Confirm no 'coordinator' field
+    HAS_COORD=$(printf '%s' "$HEALTH_RESP" | jq 'has("coordinator")')
+    assert_eq "node $i health has no 'coordinator' field" "false" "$HAS_COORD"
 done
 
-# 5f. All coordinators produce the same evaluation
+# ---------- 5. Test /partial-evaluate on each node ----------
+
 echo ""
-echo "--- Test 5f: All coordinators produce same evaluation ---"
-EVAL_1=$(curl -sf -X POST "http://127.0.0.1:$NODE1_PORT/evaluate" \
-    -H "Content-Type: application/json" \
-    -d "{\"blinded_point\": \"$TEST_BLINDED_POINT\"}" | jq -r '.evaluation')
-EVAL_2=$(curl -sf -X POST "http://127.0.0.1:$NODE2_PORT/evaluate" \
-    -H "Content-Type: application/json" \
-    -d "{\"blinded_point\": \"$TEST_BLINDED_POINT\"}" | jq -r '.evaluation')
-EVAL_3=$(curl -sf -X POST "http://127.0.0.1:$NODE3_PORT/evaluate" \
-    -H "Content-Type: application/json" \
-    -d "{\"blinded_point\": \"$TEST_BLINDED_POINT\"}" | jq -r '.evaluation')
+echo "=== Step 5: Testing /partial-evaluate on each node ==="
 
-assert_eq "node 1 and 2 produce same evaluation" "$EVAL_1" "$EVAL_2"
-assert_eq "node 1 and 3 produce same evaluation" "$EVAL_1" "$EVAL_3"
+# secp256k1 generator point (compressed)
+BLINDED_POINT_1="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 
-# ---------- 6. Summary ----------
+# Compute client_data_hash = sha256(raw bytes of the blinded point)
+CDH_1=$(hex_bytes_sha256 "$BLINDED_POINT_1")
+echo "  Blinded point 1: $BLINDED_POINT_1"
+echo "  client_data_hash 1: $CDH_1"
+
+for i in 1 2 3; do
+    echo ""
+    echo "--- Test 5.$i: POST /partial-evaluate on node $i ---"
+    port_var="NODE${i}_PORT"
+    port="${!port_var}"
+
+    PE_HTTP_CODE=$(curl -s -o "$TMPDIR/pe_resp_${i}.json" -w "%{http_code}" \
+        -X POST "http://127.0.0.1:$port/partial-evaluate" \
+        -H "Content-Type: application/json" \
+        -d "{\"blinded_point\": \"$BLINDED_POINT_1\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_1\"}}")
+
+    if [[ "$PE_HTTP_CODE" != "200" ]]; then
+        echo "  DEBUG: /partial-evaluate on node $i returned HTTP $PE_HTTP_CODE"
+        echo "  DEBUG: response body: $(cat "$TMPDIR/pe_resp_${i}.json" 2>/dev/null)"
+        echo "  DEBUG: node $i log (last 20 lines):"
+        tail -20 "$TMPDIR/node${i}.log" 2>/dev/null || echo "(no log)"
+    fi
+    assert_eq "node $i /partial-evaluate returns 200" "200" "$PE_HTTP_CODE"
+
+    if [[ -f "$TMPDIR/pe_resp_${i}.json" && "$PE_HTTP_CODE" == "200" ]]; then
+        PE_RESP=$(cat "$TMPDIR/pe_resp_${i}.json")
+
+        # node_id
+        PE_NODE_ID=$(printf '%s' "$PE_RESP" | jq -r '.node_id')
+        assert_eq "node $i response node_id is $i" "$i" "$PE_NODE_ID"
+
+        # partial_point: valid compressed secp256k1 point (02 or 03 prefix + 64 hex chars)
+        PARTIAL_POINT=$(printf '%s' "$PE_RESP" | jq -r '.partial_point')
+        assert_match "node $i partial_point is valid compressed point" \
+            '^(02|03)[0-9a-f]{64}$' "$PARTIAL_POINT"
+
+        # dleq_proof.challenge: 64 hex chars
+        CHALLENGE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.challenge')
+        assert_match "node $i dleq_proof.challenge is 64 hex" \
+            '^[0-9a-f]{64}$' "$CHALLENGE"
+
+        # dleq_proof.response: 64 hex chars
+        RESPONSE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.response')
+        assert_match "node $i dleq_proof.response is 64 hex" \
+            '^[0-9a-f]{64}$' "$RESPONSE"
+    else
+        echo "  FAIL: no valid response from node $i /partial-evaluate"
+        FAIL=$((FAIL + 1))
+    fi
+done
+
+# ---------- 6. Test rate limiting ----------
+
+echo ""
+echo "=== Step 6: Testing rate limiting ==="
+
+# The rate limiter allows 5 requests per device per day.
+# In test mode, device_id_hash == client_data_hash.
+# We already consumed 1 request on node 1 in step 5.
+# Send 4 more to exhaust the limit, then the 6th should return 429.
+
+echo "  Exhausting rate limit on node 1 (4 more requests, 5 total allowed)..."
+for _n in 1 2 3 4; do
+    curl -s -o /dev/null \
+        -X POST "http://127.0.0.1:$NODE1_PORT/partial-evaluate" \
+        -H "Content-Type: application/json" \
+        -d "{\"blinded_point\": \"$BLINDED_POINT_1\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_1\"}}"
+done
+
+echo "  Sending 6th request to node 1 (same device hash) — expecting 429 ..."
+RATE_HTTP_CODE=$(curl -s -o "$TMPDIR/rate_resp.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:$NODE1_PORT/partial-evaluate" \
+    -H "Content-Type: application/json" \
+    -d "{\"blinded_point\": \"$BLINDED_POINT_1\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_1\"}}")
+
+assert_eq "6th same-device request to node 1 returns 429" "429" "$RATE_HTTP_CODE"
+
+# ---------- 7. Test that different nodes produce valid partial evaluations ----------
+
+echo ""
+echo "=== Step 7: Testing partial evaluations from different nodes ==="
+
+# Use a second blinded point to avoid triggering the rate limit hit in step 5 on nodes 2 and 3.
+# secp256k1 point: 2*G (known compressed form)
+BLINDED_POINT_2="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+CDH_2=$(hex_bytes_sha256 "$BLINDED_POINT_2")
+echo "  Blinded point 2: $BLINDED_POINT_2"
+echo "  client_data_hash 2: $CDH_2"
+
+# Each node has its own independent in-process rate limiter.
+# Node 2 and node 3 have not yet seen CDH_2, so both should return 200.
+PE2_CODE=$(curl -s -o "$TMPDIR/pe2_resp.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:$NODE2_PORT/partial-evaluate" \
+    -H "Content-Type: application/json" \
+    -d "{\"blinded_point\": \"$BLINDED_POINT_2\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_2\"}}")
+assert_eq "node 2 /partial-evaluate with point 2 returns 200" "200" "$PE2_CODE"
+
+PE3_CODE=$(curl -s -o "$TMPDIR/pe3_resp.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:$NODE3_PORT/partial-evaluate" \
+    -H "Content-Type: application/json" \
+    -d "{\"blinded_point\": \"$BLINDED_POINT_2\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_2\"}}")
+assert_eq "node 3 /partial-evaluate with point 2 returns 200" "200" "$PE3_CODE"
+
+if [[ "$PE2_CODE" == "200" ]]; then
+    PP2=$(jq -r '.partial_point' "$TMPDIR/pe2_resp.json")
+    assert_match "node 2 partial_point for point 2 is valid compressed point" \
+        '^(02|03)[0-9a-f]{64}$' "$PP2"
+fi
+if [[ "$PE3_CODE" == "200" ]]; then
+    PP3=$(jq -r '.partial_point' "$TMPDIR/pe3_resp.json")
+    assert_match "node 3 partial_point for point 2 is valid compressed point" \
+        '^(02|03)[0-9a-f]{64}$' "$PP3"
+fi
+
+# ---------- 8. Test /attestation endpoint ----------
+
+echo ""
+echo "=== Step 8: Testing /attestation endpoint ==="
+
+# In a non-TEE environment the endpoint should return 503
+ATT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    "http://127.0.0.1:$NODE1_PORT/attestation")
+assert_eq "GET /attestation returns 503 (no TEE hardware)" "503" "$ATT_CODE"
+
+# ---------- 9. Summary ----------
 
 echo ""
 echo "========================================"
