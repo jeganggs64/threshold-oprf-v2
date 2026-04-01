@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# Deploy the TOPRFRegistry contract.
+# Deploy the TOPRFRegistry contract with DKG ceremony data.
+#
+# Prerequisites:
+#   1. Run the DKG ceremony → produces dkg-data.json
+#   2. Place dkg-data.json in this directory (contracts/)
+#   3. cp .env.example .env  and fill in DEPLOYER_PRIVATE_KEY and RPC_URL
 #
 # Usage:
 #   cd contracts
-#   cp .env.example .env   # fill in DEPLOYER_PRIVATE_KEY and RPC_URL
-#   bash deploy.sh         # deploy to the configured chain
+#   bash deploy.sh           # deploy to the configured chain
 #   bash deploy.sh --verify  # deploy and verify on Basescan
 #
 set -euo pipefail
@@ -62,6 +66,16 @@ if [[ "$BALANCE" == "0" ]]; then
     echo ""
 fi
 
+# Check dkg-data.json exists
+if [[ ! -f dkg-data.json ]]; then
+    echo "Error: dkg-data.json not found."
+    echo "Run the DKG ceremony first, then place the output here."
+    echo "See dkg-data.example.json for the expected format."
+    exit 1
+fi
+echo "DKG data:  dkg-data.json"
+echo ""
+
 # Confirm
 read -p "Deploy TOPRFRegistry to $RPC_URL? [y/N] " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
@@ -92,6 +106,5 @@ echo "=== Deployment complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Note the contract address from the output above"
-echo "  2. Update the well-known endpoint with the contract address"
-echo "  3. Run the DKG ceremony: toprf-dkg-cli init --registry-contract <ADDRESS> ..."
-echo "  4. After finalize(), the deployer key can be discarded"
+echo "  2. Update the well-known endpoint (toprf-nodes.json) with the contract address"
+echo "  3. The deployer key can be discarded — the contract is immutable"

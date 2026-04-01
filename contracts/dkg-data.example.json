@@ -1,0 +1,29 @@
+{
+  "groupPublicKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
+  "threshold": 2,
+  "nodeCount": 3,
+  "nodes": [
+    {
+      "nodeId": 1,
+      "dkgCommitment": "0x",
+      "attestationReport": "0x",
+      "certChain": "0x",
+      "verificationShare": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "nodeId": 2,
+      "dkgCommitment": "0x",
+      "attestationReport": "0x",
+      "certChain": "0x",
+      "verificationShare": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "nodeId": 3,
+      "dkgCommitment": "0x",
+      "attestationReport": "0x",
+      "certChain": "0x",
+      "verificationShare": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-
-contract TOPRFRegistry is Ownable {
+/// @title TOPRFRegistry
+/// @notice Immutable on-chain record of a FROST DKG ceremony.
+///         All data is set in the constructor. No functions, no owner, no mutations.
+///         Exists solely as public proof that DKG happened and no one held the master key.
+contract TOPRFRegistry {
     struct NodeRecord {
         uint8   nodeId;
         bytes   dkgCommitment;
@@ -12,40 +14,32 @@ contract TOPRFRegistry is Ownable {
         bytes32 verificationShare;
     }
 
-    bytes32 public groupPublicKey;
+    bytes32 public immutable groupPublicKey;
     string  public sourceRepo;
-    uint8   public threshold;
-    uint256 public dkgTimestamp;
-    bool    public finalized;
+    uint8   public immutable threshold;
+    uint8   public immutable nodeCount;
+    uint256 public immutable dkgTimestamp;
 
     mapping(uint8 => NodeRecord) public nodes;
-    uint8 public nodeCount;
 
-    event NodeRecorded(uint8 indexed nodeId);
-    event Finalized(bytes32 groupPublicKey, uint8 threshold);
-
-    constructor() Ownable(msg.sender) {}
-
-    function recordNode(uint8 nodeId, NodeRecord calldata record) external onlyOwner {
-        require(!finalized, "Already finalized");
-        require(nodes[nodeId].nodeId == 0, "Node already recorded");
-        nodes[nodeId] = record;
-        nodeCount++;
-        emit NodeRecorded(nodeId);
-    }
-
-    function finalize(
+    constructor(
         bytes32 _groupPublicKey,
-        string calldata _sourceRepo,
-        uint8 _threshold
-    ) external onlyOwner {
-        require(!finalized, "Already finalized");
-        require(nodeCount >= _threshold, "Not enough nodes");
+        string memory _sourceRepo,
+        uint8 _threshold,
+        NodeRecord[] memory _nodes
+    ) {
+        require(_nodes.length >= _threshold, "Not enough nodes");
+
         groupPublicKey = _groupPublicKey;
         sourceRepo = _sourceRepo;
         threshold = _threshold;
+        nodeCount = uint8(_nodes.length);
         dkgTimestamp = block.timestamp;
-        finalized = true;
-        emit Finalized(_groupPublicKey, _threshold);
+
+        for (uint8 i = 0; i < _nodes.length; i++) {
+            require(_nodes[i].nodeId > 0, "nodeId must be nonzero");
+            require(nodes[_nodes[i].nodeId].nodeId == 0, "Duplicate nodeId");
+            nodes[_nodes[i].nodeId] = _nodes[i];
+        }
     }
 }

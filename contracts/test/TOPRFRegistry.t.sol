@@ -5,139 +5,116 @@ import "forge-std/Test.sol";
 import "../src/TOPRFRegistry.sol";
 
 contract TOPRFRegistryTest is Test {
-    TOPRFRegistry registry;
-    address owner = address(this);
 
-    function setUp() public {
-        registry = new TOPRFRegistry();
-    }
-
-    function testRecordNode() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-            nodeId: 1,
-            dkgCommitment: hex"aabb",
-            attestationReport: hex"ccdd",
-            certChain: hex"eeff",
-            verificationShare: bytes32(uint256(1))
-        });
-        registry.recordNode(1, record);
-        assertEq(registry.nodeCount(), 1);
-    }
-
-    function testRecordMultipleNodes() public {
-        for (uint8 i = 1; i <= 3; i++) {
-            TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-                nodeId: i,
-                dkgCommitment: abi.encodePacked(i),
-                attestationReport: abi.encodePacked(i),
-                certChain: abi.encodePacked(i),
-                verificationShare: bytes32(uint256(i))
+    function _makeNodes(uint8 count) internal pure returns (TOPRFRegistry.NodeRecord[] memory) {
+        TOPRFRegistry.NodeRecord[] memory nodes = new TOPRFRegistry.NodeRecord[](count);
+        for (uint8 i = 0; i < count; i++) {
+            nodes[i] = TOPRFRegistry.NodeRecord({
+                nodeId: i + 1,
+                dkgCommitment: abi.encodePacked(i + 1),
+                attestationReport: abi.encodePacked(i + 1),
+                certChain: abi.encodePacked(i + 1),
+                verificationShare: bytes32(uint256(i + 1))
             });
-            registry.recordNode(i, record);
         }
-        assertEq(registry.nodeCount(), 3);
+        return nodes;
     }
 
-    function testFinalize() public {
-        // Record 2 nodes
-        for (uint8 i = 1; i <= 2; i++) {
-            TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-                nodeId: i,
-                dkgCommitment: abi.encodePacked(i),
-                attestationReport: abi.encodePacked(i),
-                certChain: abi.encodePacked(i),
-                verificationShare: bytes32(uint256(i))
-            });
-            registry.recordNode(i, record);
-        }
-        registry.finalize(bytes32(uint256(42)), "https://github.com/ruonlabs/threshold-oprf", 2);
-        assertTrue(registry.finalized());
+    function testDeployWithThreeNodes() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = _makeNodes(3);
+        TOPRFRegistry registry = new TOPRFRegistry(
+            bytes32(uint256(42)),
+            "https://github.com/ruonlabs/threshold-oprf",
+            2,
+            nodes
+        );
+
         assertEq(registry.groupPublicKey(), bytes32(uint256(42)));
         assertEq(registry.threshold(), 2);
-        assertEq(keccak256(bytes(registry.sourceRepo())), keccak256(bytes("https://github.com/ruonlabs/threshold-oprf")));
+        assertEq(registry.nodeCount(), 3);
+        assertEq(registry.dkgTimestamp(), block.timestamp);
+
+        (uint8 nodeId,,,,) = registry.nodes(1);
+        assertEq(nodeId, 1);
+
+        (uint8 nodeId2,,,,) = registry.nodes(2);
+        assertEq(nodeId2, 2);
     }
 
-    function testCannotRecordAfterFinalize() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
+    function testSourceRepo() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = _makeNodes(2);
+        TOPRFRegistry registry = new TOPRFRegistry(
+            bytes32(uint256(1)),
+            "https://github.com/ruonlabs/threshold-oprf",
+            2,
+            nodes
+        );
+        assertEq(
+            keccak256(bytes(registry.sourceRepo())),
+            keccak256(bytes("https://github.com/ruonlabs/threshold-oprf"))
+        );
+    }
+
+    function testImmutableAfterDeploy() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = _makeNodes(2);
+        TOPRFRegistry registry = new TOPRFRegistry(
+            bytes32(uint256(42)),
+            "repo",
+            2,
+            nodes
+        );
+        assertEq(registry.groupPublicKey(), bytes32(uint256(42)));
+        assertEq(registry.nodeCount(), 2);
+    }
+
+    function testRejectsNotEnoughNodes() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = _makeNodes(1);
+        vm.expectRevert("Not enough nodes");
+        new TOPRFRegistry(bytes32(uint256(42)), "repo", 2, nodes);
+    }
+
+    function testRejectsDuplicateNodeId() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = new TOPRFRegistry.NodeRecord[](2);
+        nodes[0] = TOPRFRegistry.NodeRecord({
             nodeId: 1,
             dkgCommitment: hex"aa",
             attestationReport: hex"bb",
             certChain: hex"cc",
             verificationShare: bytes32(uint256(1))
         });
-        registry.recordNode(1, record);
-        registry.finalize(bytes32(uint256(42)), "repo", 1);
-
-        TOPRFRegistry.NodeRecord memory record2 = TOPRFRegistry.NodeRecord({
-            nodeId: 2,
+        nodes[1] = TOPRFRegistry.NodeRecord({
+            nodeId: 1,
             dkgCommitment: hex"dd",
             attestationReport: hex"ee",
             certChain: hex"ff",
             verificationShare: bytes32(uint256(2))
         });
-        vm.expectRevert("Already finalized");
-        registry.recordNode(2, record2);
+        vm.expectRevert("Duplicate nodeId");
+        new TOPRFRegistry(bytes32(uint256(42)), "repo", 1, nodes);
     }
 
-    function testCannotFinalizeWithoutEnoughNodes() public {
-        vm.expectRevert("Not enough nodes");
-        registry.finalize(bytes32(uint256(42)), "repo", 2);
-    }
-
-    function testCannotFinalizeTwice() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-            nodeId: 1,
+    function testRejectsNodeIdZero() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = new TOPRFRegistry.NodeRecord[](1);
+        nodes[0] = TOPRFRegistry.NodeRecord({
+            nodeId: 0,
             dkgCommitment: hex"aa",
             attestationReport: hex"bb",
             certChain: hex"cc",
             verificationShare: bytes32(uint256(1))
         });
-        registry.recordNode(1, record);
-        registry.finalize(bytes32(uint256(42)), "repo", 1);
-
-        vm.expectRevert("Already finalized");
-        registry.finalize(bytes32(uint256(99)), "repo2", 1);
+        vm.expectRevert("nodeId must be nonzero");
+        new TOPRFRegistry(bytes32(uint256(42)), "repo", 1, nodes);
     }
 
-    function testCannotRecordDuplicateNode() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-            nodeId: 1,
-            dkgCommitment: hex"aa",
-            attestationReport: hex"bb",
-            certChain: hex"cc",
-            verificationShare: bytes32(uint256(1))
-        });
-        registry.recordNode(1, record);
-
-        vm.expectRevert("Node already recorded");
-        registry.recordNode(1, record);
-    }
-
-    function testNonOwnerCannotRecord() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-            nodeId: 1,
-            dkgCommitment: hex"aa",
-            attestationReport: hex"bb",
-            certChain: hex"cc",
-            verificationShare: bytes32(uint256(1))
-        });
-        vm.prank(address(0xdead));
-        vm.expectRevert();
-        registry.recordNode(1, record);
-    }
-
-    function testNonOwnerCannotFinalize() public {
-        TOPRFRegistry.NodeRecord memory record = TOPRFRegistry.NodeRecord({
-            nodeId: 1,
-            dkgCommitment: hex"aa",
-            attestationReport: hex"bb",
-            certChain: hex"cc",
-            verificationShare: bytes32(uint256(1))
-        });
-        registry.recordNode(1, record);
-
-        vm.prank(address(0xdead));
-        vm.expectRevert();
-        registry.finalize(bytes32(uint256(42)), "repo", 1);
+    function testSingleNodeWithThresholdOne() public {
+        TOPRFRegistry.NodeRecord[] memory nodes = _makeNodes(1);
+        TOPRFRegistry registry = new TOPRFRegistry(
+            bytes32(uint256(99)),
+            "repo",
+            1,
+            nodes
+        );
+        assertEq(registry.nodeCount(), 1);
+        assertEq(registry.threshold(), 1);
     }
 }
