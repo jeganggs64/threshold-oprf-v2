@@ -50,6 +50,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            target/release/toprf-node
+            target/release/toprf-dkg-node
+            target/release/toprf-dkg-cli
+            target/release/toprf-verify
 
   integration:
     name: Integration Tests
