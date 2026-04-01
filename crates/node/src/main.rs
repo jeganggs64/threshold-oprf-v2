@@ -26,6 +26,7 @@
 mod attestation;
 pub mod config;
 mod evaluate;
+mod join;
 mod rate_limit;
 mod reshare_handler;
 mod snp_endpoint;
@@ -136,6 +137,7 @@ async fn main() {
     let mut client_ca: Option<String> = None;
     let mut key_file: Option<String> = None;
     let mut well_known_url: Option<String> = None;
+    let mut join_mode = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -188,6 +190,9 @@ async fn main() {
                 }
                 well_known_url = Some(args[i].clone());
             }
+            "--join" => {
+                join_mode = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: toprf-node [OPTIONS]");
                 eprintln!();
@@ -195,6 +200,7 @@ async fn main() {
                 eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
                 eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
                 eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
+                eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
                 eprintln!("      --tls-cert <PATH>       TLS server certificate (PEM)");
                 eprintln!("      --tls-key <PATH>        TLS server private key (PEM)");
                 eprintln!("      --client-ca <PATH>      CA cert for client auth (enables mTLS)");
@@ -307,11 +313,16 @@ async fn main() {
         );
     }
 
+    if join_mode {
+        info!("starting in join mode — waiting for /reshare/receive to initialize key");
+    }
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/attestation", get(snp_endpoint::attestation_handler))
         .route("/partial-evaluate", post(evaluate::partial_evaluate_handler))
         .route("/reshare", post(reshare_handler::reshare_handler))
+        .route("/reshare/receive", post(join::reshare_receive_handler))
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
         .with_state(state);
 
