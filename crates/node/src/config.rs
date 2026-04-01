@@ -1,0 +1,61 @@
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WellKnownConfig {
+    pub version: u32,
+    pub threshold: u16,
+    #[serde(rename = "groupPublicKey")]
+    pub group_public_key: String,
+    #[serde(rename = "expectedBinaryHash")]
+    pub expected_binary_hash: String,
+    #[serde(rename = "approvedMeasurements")]
+    pub approved_measurements: Vec<String>,
+    pub nodes: Vec<NodeEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeEntry {
+    pub id: u16,
+    pub url: String,
+    #[serde(rename = "verificationShare")]
+    pub verification_share: Option<String>,
+}
+
+/// Fetch and parse the well-known config from a URL.
+pub async fn fetch_well_known(url: &str) -> Result<WellKnownConfig, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let config: WellKnownConfig = client.get(url).send().await?.json().await?;
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_well_known_json() {
+        let json = r#"{
+            "version": 1,
+            "threshold": 2,
+            "groupPublicKey": "02abc",
+            "expectedBinaryHash": "sha256:def",
+            "approvedMeasurements": ["sha384:aaa"],
+            "nodes": [
+                {"id": 1, "url": "https://node1.example.com"},
+                {"id": 2, "url": "https://node2.example.com", "verificationShare": "03xyz"}
+            ]
+        }"#;
+        let config: WellKnownConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.version, 1);
+        assert_eq!(config.threshold, 2);
+        assert_eq!(config.group_public_key, "02abc");
+        assert_eq!(config.expected_binary_hash, "sha256:def");
+        assert_eq!(config.approved_measurements.len(), 1);
+        assert_eq!(config.nodes.len(), 2);
+        assert_eq!(config.nodes[0].id, 1);
+        assert!(config.nodes[0].verification_share.is_none());
+        assert_eq!(config.nodes[1].verification_share.as_deref(), Some("03xyz"));
+    }
+}

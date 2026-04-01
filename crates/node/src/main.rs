@@ -24,6 +24,7 @@
 //!   EXPECTED_VERIFICATION_SHARE — hex-encoded k_i * G for key verification
 
 mod attestation;
+pub mod config;
 mod evaluate;
 mod rate_limit;
 mod reshare_handler;
@@ -63,6 +64,8 @@ pub struct NodeState {
     pub cached_attestation: std::sync::RwLock<Option<snp_endpoint::AttestationResponse>>,
     /// Per-device rate limiter for /partial-evaluate (max 5 evaluations per day).
     pub rate_limiter: rate_limit::RateLimiter,
+    /// Well-known config fetched at boot. None in dev/test mode (no --well-known-url).
+    pub well_known_config: Option<config::WellKnownConfig>,
 }
 
 pub(crate) struct LoadedKey {
@@ -132,6 +135,7 @@ async fn main() {
     let mut tls_key: Option<String> = None;
     let mut client_ca: Option<String> = None;
     let mut key_file: Option<String> = None;
+    let mut well_known_url: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -176,16 +180,25 @@ async fn main() {
                 }
                 key_file = Some(args[i].clone());
             }
+            "--well-known-url" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --well-known-url");
+                    std::process::exit(1);
+                }
+                well_known_url = Some(args[i].clone());
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: toprf-node [OPTIONS]");
                 eprintln!();
                 eprintln!("Options:");
-                eprintln!("  -p, --port <PORT>      Listen port (default: 3001)");
-                eprintln!("      --key-file <PATH>  Load key share from JSON file at boot");
-                eprintln!("      --tls-cert <PATH>  TLS server certificate (PEM)");
-                eprintln!("      --tls-key <PATH>   TLS server private key (PEM)");
-                eprintln!("      --client-ca <PATH> CA cert for client auth (enables mTLS)");
-                eprintln!("  -h, --help             Show this help");
+                eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
+                eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
+                eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
+                eprintln!("      --tls-cert <PATH>       TLS server certificate (PEM)");
+                eprintln!("      --tls-key <PATH>        TLS server private key (PEM)");
+                eprintln!("      --client-ca <PATH>      CA cert for client auth (enables mTLS)");
+                eprintln!("  -h, --help                  Show this help");
                 eprintln!();
                 eprintln!("Environment:");
                 eprintln!("  PORT                        Listen port (default: 3001)");
@@ -205,11 +218,35 @@ async fn main() {
         i += 1;
     }
 
+    // -- Fetch well-known config (non-fatal if unavailable) --
+    let well_known_config = if let Some(ref url) = well_known_url {
+        info!(url = %url, "fetching well-known config");
+        match config::fetch_well_known(url).await {
+            Ok(cfg) => {
+                info!(
+                    version = cfg.version,
+                    threshold = cfg.threshold,
+                    nodes = cfg.nodes.len(),
+                    "well-known config loaded"
+                );
+                Some(cfg)
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "failed to fetch well-known config — continuing without it");
+                None
+            }
+        }
+    } else {
+        info!("no --well-known-url provided, skipping well-known config fetch");
+        None
+    };
+
     let state = Arc::new(NodeState {
         loaded_key: OnceLock::new(),
         reshare_seen: std::sync::Mutex::new(Vec::with_capacity(64)),
         cached_attestation: std::sync::RwLock::new(None),
         rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
+        well_known_config,
     });
 
     // -- Load key from file (testing/dev) --
