@@ -63,33 +63,6 @@ jobs:
       - name: Run integration tests
         run: bash scripts/integration-test.sh
 
-  docker:
-    name: Build & Push Node Image
-    needs: [check, test]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/sev/Dockerfile.sev
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/toprf-node:latest
-            ghcr.io/${{ github.repository_owner }}/toprf-node:${{ github.sha }}
-      - uses: sigstore/cosign-installer@v3
-      - name: Sign container image
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign sign --yes ghcr.io/${{ github.repository_owner }}/toprf-node:${{ github.sha }}
+  # Docker build & push DISABLED in v2 fork.
+  # The production image is built from the original threshold-oprf repo.
+  # This fork is for development/testing only — no image pushes.
