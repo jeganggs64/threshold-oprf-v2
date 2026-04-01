@@ -15,6 +15,9 @@
 #
 set -euo pipefail
 
+# Allow test attestation platform in dev/CI
+export TOPRF_ALLOW_TEST_ATTESTATION=1
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 

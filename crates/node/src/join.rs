@@ -57,6 +57,9 @@ pub async fn reshare_receive_handler(
     State(state): State<Arc<NodeState>>,
     Json(req): Json<ReshareReceiveRequest>,
 ) -> Result<Json<ReshareReceiveResponse>, (StatusCode, String)> {
+    // Hold the join lock for the entire operation to prevent TOCTOU races
+    let _join_lock = state.join_in_progress.lock().unwrap();
+
     // 1. Reject if already has a key
     if state.loaded_key.get().is_some() {
         warn!("reshare/receive: node already has a key loaded — rejecting");
@@ -145,8 +148,10 @@ pub async fn reshare_receive_handler(
             format!("failed to serialize key share: {e}"),
         )
     })?;
-    std::fs::write("node-key.json", &share_json).map_err(|e| {
-        warn!("reshare/receive: failed to write node-key.json: {e}");
+    let key_path = state.data_dir.as_deref().unwrap_or(".");
+    let key_file = format!("{}/node-key.json", key_path);
+    std::fs::write(&key_file, &share_json).map_err(|e| {
+        warn!("reshare/receive: failed to write {}: {e}", key_file);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to write key to disk: {e}"),

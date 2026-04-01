@@ -61,7 +61,14 @@ pub async fn verify_attestation(
     match payload.platform {
         Platform::Ios => verify_ios(payload, expected_client_data_hash),
         Platform::Android => verify_android(payload).await,
-        Platform::Test => verify_test(payload, expected_client_data_hash),
+        Platform::Test => {
+            if std::env::var("TOPRF_ALLOW_TEST_ATTESTATION").unwrap_or_default() != "1" {
+                return Err(AttestationError::Invalid(
+                    "test platform not available — set TOPRF_ALLOW_TEST_ATTESTATION=1 for dev mode".into()
+                ));
+            }
+            verify_test(payload, expected_client_data_hash)
+        }
     }
 }
 
@@ -177,6 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_test_platform_accepts_valid() {
+        std::env::set_var("TOPRF_ALLOW_TEST_ATTESTATION", "1");
         let expected: [u8; 32] = [0xab; 32];
         let payload = AttestationPayload {
             platform: Platform::Test,
@@ -192,6 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_test_platform_rejects_mismatch() {
+        std::env::set_var("TOPRF_ALLOW_TEST_ATTESTATION", "1");
         let expected: [u8; 32] = [0xab; 32];
         let wrong: [u8; 32] = [0xcd; 32];
         let payload = AttestationPayload {
@@ -208,6 +217,10 @@ mod tests {
             "expected ClientDataHashMismatch, got: {err}"
         );
     }
+
+    // Note: the env-var gate for Platform::Test cannot be reliably tested
+    // in-process because env vars are process-global and tests run in parallel.
+    // The gate is exercised by the integration tests instead.
 
     #[tokio::test]
     async fn test_ios_rejects_missing_fields() {

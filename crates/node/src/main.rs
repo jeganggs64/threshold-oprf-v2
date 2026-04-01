@@ -67,6 +67,10 @@ pub struct NodeState {
     pub rate_limiter: rate_limit::RateLimiter,
     /// Well-known config fetched at boot. None in dev/test mode (no --well-known-url).
     pub well_known_config: Option<config::WellKnownConfig>,
+    /// Directory for persisting key files. Defaults to current directory.
+    pub data_dir: Option<String>,
+    /// Guards against concurrent join operations (TOCTOU protection).
+    pub join_in_progress: std::sync::Mutex<()>,
 }
 
 pub(crate) struct LoadedKey {
@@ -137,6 +141,7 @@ async fn main() {
     let mut client_ca: Option<String> = None;
     let mut key_file: Option<String> = None;
     let mut well_known_url: Option<String> = None;
+    let mut data_dir: Option<String> = None;
     let mut join_mode = false;
 
     let mut i = 1;
@@ -190,6 +195,14 @@ async fn main() {
                 }
                 well_known_url = Some(args[i].clone());
             }
+            "--data-dir" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --data-dir");
+                    std::process::exit(1);
+                }
+                data_dir = Some(args[i].clone());
+            }
             "--join" => {
                 join_mode = true;
             }
@@ -200,6 +213,7 @@ async fn main() {
                 eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
                 eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
                 eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
+                eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
                 eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
                 eprintln!("      --tls-cert <PATH>       TLS server certificate (PEM)");
                 eprintln!("      --tls-key <PATH>        TLS server private key (PEM)");
@@ -253,6 +267,8 @@ async fn main() {
         cached_attestation: std::sync::RwLock::new(None),
         rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
         well_known_config,
+        data_dir,
+        join_in_progress: std::sync::Mutex::new(()),
     });
 
     // -- Load key from file (testing/dev) --

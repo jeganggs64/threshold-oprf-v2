@@ -5,6 +5,7 @@
 //! device's epoch start — no background cleanup thread is required.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,7 @@ pub struct RateLimiter {
     max_per_epoch: u32,
     epoch_duration: Duration,
     devices: Mutex<HashMap<[u8; 32], DeviceRecord>>,
+    call_count: AtomicU64,
 }
 
 impl RateLimiter {
@@ -38,6 +40,7 @@ impl RateLimiter {
             max_per_epoch,
             epoch_duration,
             devices: Mutex::new(HashMap::new()),
+            call_count: AtomicU64::new(0),
         }
     }
 
@@ -63,7 +66,7 @@ impl RateLimiter {
             record.count = 0;
         }
 
-        if record.count < self.max_per_epoch {
+        let result = if record.count < self.max_per_epoch {
             record.count += 1;
             Ok(())
         } else {
@@ -71,7 +74,16 @@ impl RateLimiter {
             let elapsed = now.duration_since(record.epoch_start);
             let retry_after = self.epoch_duration.saturating_sub(elapsed);
             Err(retry_after)
+        };
+
+        // Periodic eviction: every 1000 calls, remove entries whose epoch has expired.
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if count % 1000 == 0 {
+            let epoch_duration = self.epoch_duration;
+            map.retain(|_, record| now.duration_since(record.epoch_start) < epoch_duration);
         }
+
+        result
     }
 }
 

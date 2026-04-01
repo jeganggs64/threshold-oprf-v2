@@ -244,13 +244,13 @@ async fn round3(
     State(state): State<Arc<DkgState>>,
     Json(req): Json<Round3Request>,
 ) -> Result<Json<NodeKeyShare>, (StatusCode, Json<ErrorResponse>)> {
-    // Get the round2 secret
+    // Take the round2 secret (consumed — round3 can only be called once)
     let round2_secret = {
-        let guard = state.round2_secret.lock().unwrap();
-        guard.as_ref().cloned().ok_or_else(|| {
+        let mut guard = state.round2_secret.lock().unwrap();
+        guard.take().ok_or_else(|| {
             error_response(
                 StatusCode::BAD_REQUEST,
-                "round2 not yet executed",
+                "round2 not yet executed or round3 already executed",
             )
         })?
     };

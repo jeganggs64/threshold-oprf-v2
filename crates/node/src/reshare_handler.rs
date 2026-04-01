@@ -232,17 +232,18 @@ pub async fn reshare_handler(
             .into_response());
     }
 
-    // Verify REPORT_DATA binds to target_pubkey: REPORT_DATA[0..32] == SHA256(pubkey)
+    // Verify REPORT_DATA binds to target_pubkey: REPORT_DATA[32..64] == SHA256(pubkey)
+    // Layout: [0..32] = sha256(binary), [32..64] = sha256(key material)
     let expected_hash = {
         let mut hasher = Sha256::new();
         hasher.update(&pubkey_bytes);
         hasher.finalize()
     };
-    if report.report_data[..32] != expected_hash[..] {
-        warn!("reshare: REPORT_DATA does not match SHA256(target_pubkey)");
+    if report.report_data[32..64] != expected_hash[..] {
+        warn!("reshare: REPORT_DATA[32..64] does not match SHA256(target_pubkey)");
         return Err((
             StatusCode::FORBIDDEN,
-            "REPORT_DATA does not bind to provided target_pubkey".to_string(),
+            "REPORT_DATA[32..64] does not bind to provided target_pubkey".to_string(),
         )
             .into_response());
     }
