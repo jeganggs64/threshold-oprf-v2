@@ -53,3 +53,7 @@ docs/*.pdf
 docs/*.tex
 docs/*.aux
 docs/*.log
+
+# Foundry build artifacts
+contracts/out/
+contracts/cache/
