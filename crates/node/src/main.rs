@@ -24,6 +24,7 @@
 //!   EXPECTED_VERIFICATION_SHARE — hex-encoded k_i * G for key verification
 
 mod attestation;
+mod evaluate;
 mod rate_limit;
 mod reshare_handler;
 mod snp_endpoint;
@@ -33,20 +34,16 @@ use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
-use axum::extract::DefaultBodyLimit;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use k256::Scalar;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use zeroize::Zeroize;
 
-use toprf_core::partial_eval::partial_evaluate;
-use toprf_core::{hex_to_point, hex_to_scalar, NodeKeyShare, PartialEvaluation};
+use toprf_core::{hex_to_point, hex_to_scalar, NodeKeyShare};
 
 // -- Application state --
 
@@ -97,11 +94,6 @@ impl Drop for LoadedKey {
 
 // -- Request/response types --
 
-#[derive(Deserialize)]
-struct EvalRequest {
-    blinded_point: String,
-}
-
 #[derive(Serialize)]
 struct HealthResponse {
     status: String,
@@ -122,39 +114,6 @@ async fn health(State(state): State<Arc<NodeState>>) -> Json<HealthResponse> {
             node_id: None,
         }),
     }
-}
-
-async fn eval(
-    State(state): State<Arc<NodeState>>,
-    Json(req): Json<EvalRequest>,
-) -> Result<Json<PartialEvaluation>, axum::response::Response> {
-    let key = state.loaded_key.get().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, "no key loaded".to_string()).into_response()
-    })?;
-
-    let blinded_point = match hex_to_point(&req.blinded_point) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!("invalid blinded_point in eval: {e}");
-            return Err((StatusCode::BAD_REQUEST, "invalid input".to_string()).into_response());
-        }
-    };
-
-    let partial = match partial_evaluate(key.node_id, &key.key_share, &blinded_point) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!("partial evaluation failed: {e}");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "evaluation failed".to_string(),
-            )
-                .into_response());
-        }
-    };
-
-    info!(node_id = key.node_id, "partial evaluation complete");
-
-    Ok(Json(partial))
 }
 
 // -- Main --
@@ -314,7 +273,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/attestation", get(snp_endpoint::attestation_handler))
-        .route("/partial-evaluate", post(eval))
+        .route("/partial-evaluate", post(evaluate::partial_evaluate_handler))
         .route("/reshare", post(reshare_handler::reshare_handler))
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
         .with_state(state);
