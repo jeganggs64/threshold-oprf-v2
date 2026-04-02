@@ -1,6 +1,6 @@
 # Threshold OPRF v2
 
-A distributed threshold Oblivious Pseudorandom Function (OPRF) system for privacy-preserving proof of personhood. Uses FROST DKG for distributed key generation (the master key never exists), AMD SEV-SNP TEEs for hardware isolation, and client-side Lagrange combination so the mobile app verifies and combines partial evaluations directly.
+A distributed threshold Oblivious Pseudorandom Function (OPRF) system for privacy-preserving proof of personhood. Uses FROST DKG for distributed key generation (the master key never exists), sealed appliance VMs on Azure Confidential VMs (AMD SEV-SNP + vTPM) for hardware isolation, and client-side Lagrange combination so the mobile app verifies and combines partial evaluations directly.
 
 ## Architecture
 
@@ -9,20 +9,23 @@ Mobile App
   ├── Fetch node list from /.well-known/toprf-nodes.json
   ├── Verify verification shares against hardcoded group public key (Lagrange at x=0)
   ├── For each selected node (threshold of n, random selection):
-  │     ├── GET /attestation → verify AMD SNP cert chain + measurement
+  │     ├── Challenge-response attestation (random nonce → AMD-signed report + vTPM PCRs)
+  │     │   Proves: exact image (PCR 9), correct binary (REPORT_DATA), no SSH, signed boot
   │     └── POST /partial-evaluate { blindedPoint, attestation } → partial eval + DLEQ proof
   ├── Verify all DLEQ proofs locally
   ├── Lagrange combine partial evaluations locally
   └── Unblind → ruonId
 ```
 
-- **Every node is identical** — no coordinator, no peer-to-peer communication during evaluation
-- **Client-side combination** — the app does Lagrange interpolation, not the server
-- **FROST DKG** — the master key is never generated or held by anyone
-- **On-chain DKG proof** — immutable record on Base proves the key was generated via DKG
-- **AMD SEV-SNP** — key shares sealed to hardware, operators cannot access them
+- **Sealed appliance nodes** — no OS, no SSH, no shell. Binary runs as PID 1 on bare kernel
+- **Secure Boot** — shim (Microsoft-signed) → GRUB (Canonical-signed) → kernel (signed)
+- **vTPM PCR measurements** — prove exactly which image booted (kernel + initramfs hash)
+- **Challenge-response attestation** — fresh AMD-signed report with app's nonce, not cached
+- **FROST DKG** — master key never exists, shares ECIES-encrypted to production TEEs
+- **On-chain DKG proof** — immutable record on Base proves key was generated via DKG
+- **Client-side combination** — app does Lagrange interpolation and DLEQ verification locally
 - **Device attestation** — Apple App Attest / Google Play Integrity verified by each node
-- **Per-node rate limiting** — in-memory, independent per node
+- **Reproducible builds** — anyone can build the image, compute expected PCR 9, verify
 
 ## Repository Structure
 
@@ -31,13 +34,35 @@ crates/
   core/         Threshold OPRF cryptography (Shamir, partial eval, DLEQ, combine, reshare)
   node/         Production node server (partial-evaluate, attestation, rate limiting, reshare)
   dkg-node/     DKG ceremony node (separate binary, separate image, temporary)
-  dkg-cli/      DKG orchestration CLI (init ceremony, reshare to new nodes)
-  keygen/       Legacy ceremony tool (generate key, split into shares)
+  dkg-cli/      DKG orchestration CLI (blind relay — never sees plaintext shares)
+  keygen/       Legacy ceremony tool
   seal/         AMD SEV-SNP sealing, ECIES, attestation verification
 contracts/      TOPRFRegistry Solidity contract (immutable DKG record on Base)
 verify/         Verifier CLI (independent system integrity verification)
+image/          Sealed appliance image build (CI builds VHD, deploy to Azure)
 scripts/        Integration tests
 ```
+
+## Sealed Appliance Image
+
+Each node runs as a sealed appliance — a minimal VM with no operating system:
+
+```
+Initramfs contents (the entire "OS"):
+  /init                     — BusyBox script that mounts filesystems, loads modules, exec's into binary
+  /usr/local/bin/toprf-node — the TOPRF binary (static musl, PID 1 after exec)
+  /etc/ssl/certs/           — CA certificates
+  /lib/modules/             — Hyper-V + SEV-SNP + vTPM kernel modules
+
+NOT in the image:
+  - SSH (never existed)
+  - Shell (BusyBox init exec'd away after boot)
+  - Package manager
+  - Systemd
+  - Root filesystem
+```
+
+Built entirely in CI from open source. Reproducible. Anyone clones the repo, runs the build, gets the same VHD with the same hash. vTPM PCR 9 proves the node booted exactly this initramfs.
 
 ## Quick Start (Local Testing)
 
@@ -52,136 +77,103 @@ bash scripts/integration-test.sh
 bash scripts/dkg-integration-test.sh
 ```
 
-## DKG Ceremony
+## Deployment
 
-The DKG ceremony uses separate temporary TEE VMs (running `toprf-dkg-node`) to generate key shares. The shares are delivered to production nodes via reshare contributions. After the ceremony, DKG VMs are terminated.
+### 1. Build the sealed image (CI)
+
+Trigger the "Build Sealed Image" workflow in GitHub Actions. It produces a VHD artifact.
+
+### 2. Deploy to Azure (local)
 
 ```bash
-# 1. Boot 3 DKG nodes + 3 production nodes (--join mode)
-toprf-dkg-node --node-id 1 --threshold 2 --total 3 --port 4001
-toprf-dkg-node --node-id 2 --threshold 2 --total 3 --port 4002
-toprf-dkg-node --node-id 3 --threshold 2 --total 3 --port 4003
+# Download VHD from CI
+gh run download <run-id> --name sealed-image
 
-toprf-node --join --port 3001
-toprf-node --join --port 3002
-toprf-node --join --port 3003
+# Deploy 3 Confidential VMs
+./image/deploy-azure.sh --vhd toprf-node-sealed.vhd --region eastus --nodes 3
+```
 
-# 2. Run DKG ceremony
+### 3. DKG Ceremony
+
+```bash
+# Boot 3 DKG nodes (separate sealed image) + 3 production nodes
+# Run DKG — shares are ECIES-encrypted, CLI is a blind relay
 toprf-dkg-cli init \
-    --dkg-nodes http://localhost:4001,http://localhost:4002,http://localhost:4003 \
-    --production-nodes http://localhost:3001,http://localhost:3002,http://localhost:3003
+    --dkg-nodes <urls> \
+    --production-nodes <urls>
 
-# 3. Terminate DKG nodes — production nodes now have their shares
-# 4. Deploy on-chain registry (see contracts/)
+# Terminate DKG nodes
 ```
 
-## Adding a Node (Reshare)
+### 4. On-Chain Registry
 
 ```bash
-# Boot new node in join mode
-toprf-node --join --port 3004
-
-# Reshare from existing nodes
-toprf-dkg-cli reshare \
-    --new-node http://localhost:3004 \
-    --new-node-id 4 \
-    --existing-nodes http://localhost:3001,http://localhost:3002
-
-# Update /.well-known/toprf-nodes.json with the new node
-```
-
-Same threshold, more nodes. The group public key doesn't change.
-
-## On-Chain Registry (Base)
-
-The `TOPRFRegistry` contract is deployed once with all DKG ceremony data baked into the constructor. No owner, no functions, no mutations — pure immutable data.
-
-```bash
+# DKG ceremony produces dkg-data.json
 cd contracts
-cp .env.example .env          # Fill in DEPLOYER_PRIVATE_KEY and RPC_URL
-# Place dkg-data.json (output from DKG ceremony)
-bash deploy.sh                # One transaction, done forever
+cp dkg-data.json .
+bash deploy.sh   # Deploys to Base — one transaction, immutable
 ```
 
-## Independent Verification
-
-Anyone can verify the system's integrity without cooperation from the operator:
+### 5. Reshare (Adding Nodes)
 
 ```bash
-toprf-verify --endpoint https://ruonlabs.com/.well-known/toprf-nodes.json
+# Boot new node in join mode, run reshare from existing donors
+# Donors verify target's attestation (PCR 9 + binary hash) before sharing
 ```
 
-This tool:
-- Fetches the node manifest
-- Verifies verification shares interpolate to the group public key
-- Contacts each node for live AMD attestation
-- Checks measurements, binary hashes, VMPL, debug/migration policy
-- Cross-references against the on-chain DKG record
+## Attestation
 
-## Node Endpoints
+Challenge-response with random nonce — no caching, no timestamps:
 
 ```
-GET  /health            — liveness check
-GET  /attestation       — cached AMD SNP attestation report + cert chain
-POST /partial-evaluate  — attestation-gated partial OPRF evaluation
-POST /reshare           — share recovery (donor role)
-POST /reshare/receive   — receive key share contributions (join mode only)
-```
-
-## Well-Known Endpoint
-
-```json
-{
-  "version": 1,
-  "threshold": 2,
-  "groupPublicKey": "02...",
-  "expectedBinaryHash": "sha256:...",
-  "approvedMeasurements": ["sha384:..."],
-  "registryContract": {
-    "chain": "base",
-    "chainId": 8453,
-    "address": "0x..."
-  },
-  "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
-  "nodes": [
-    { "id": 1, "url": "https://node1.ruonlabs.com", "verificationShare": "02..." }
-  ]
-}
+App → GET /attestation?nonce=<32 random bytes hex>
+Node → generates fresh AMD SNP report with nonce in REPORT_DATA
+App verifies:
+  - AMD ECDSA-P384 signature (unforgeable)
+  - vTPM PCR 9 = expected initramfs hash (exact image)
+  - REPORT_DATA[0..32] = sha256(binary || vShare || gpk) (correct code + key)
+  - REPORT_DATA[32..64] = nonce (fresh, not replayed)
+  - Secure Boot (PCR 7), VMPL=0, debug off, migration off
 ```
 
 ## Trust Model
 
-**What users verify (or anyone on their behalf):**
-- Code is open source — this repo
-- Build is reproducible — binary hash matches
-- Nodes run correct code — AMD attestation verified by the app directly from each node
-- Key was generated via DKG — on-chain commitments on Base (immutable)
-- No one ever held the master key — DKG commitments prove it
+**What is cryptographically provable:**
+- The node runs exactly the open-source sealed image (vTPM PCR 9)
+- SSH never existed in the image (reproducible build + PCR 9)
+- The binary is correct and holds the right key share (REPORT_DATA)
+- The master key was generated via DKG, never held by anyone (on-chain commitments)
+- Shares were ECIES-encrypted during DKG — the CLI operator never saw them
+- The attestation is fresh (nonce in AMD-signed report)
+- The boot chain is signed (Secure Boot + PCR 7)
 
 **What users trust:**
 - AMD's silicon (same assumption as all confidential computing)
 
 **What users don't need to trust:**
-- RuonLabs (can't access keys — TEE + DKG)
-- Any cloud provider (can't read TEE memory)
-- The well-known endpoint (trust-critical data verified from nodes + on-chain)
+- RuonLabs (can't access keys — sealed image + SEV-SNP + DKG + ECIES)
+- Azure (can't read VM memory — SEV-SNP encryption)
+- The well-known endpoint (verified from nodes + on-chain)
 
 ## Security
 
-- **FROST DKG** — master key never exists, provable via on-chain commitments
+- **FROST DKG** — master key never exists, ECIES-encrypted transport
+- **Sealed appliance** — no SSH, no shell, binary as PID 1, proved via vTPM PCR 9
+- **Secure Boot** — signed boot chain prevents modified kernels
+- **Challenge-response attestation** — fresh AMD-signed report with random nonce
 - **T-of-N threshold** — no single node can reconstruct the key
-- **AMD SEV-SNP** — key shares sealed to hardware via MSG_KEY_REQ
 - **DLEQ proofs** — every partial evaluation proves correct key share usage
-- **Client-side verification** — app verifies AMD attestation + DLEQ proofs before trusting any node
-- **Device attestation** — Apple App Attest / Google Play Integrity gated per-node
-- **Per-node rate limiting** — prevents glossary attacks, independent per node
-- **Replay protection** — reshare requests tracked by attestation digest with TTL eviction
-- **Reshare target verification** — donor nodes check LAUNCH_DIGEST against approved measurements + binary hash
-- **Immutable on-chain record** — DKG ceremony proof on Base, no owner key, no mutations
+- **Client-side verification** — app verifies attestation + PCRs + DLEQ before trusting any node
+- **Per-node rate limiting** — prevents glossary attacks
+- **Replay protection** — blinding + nonce + clientDataHash binding
+- **Immutable on-chain record** — DKG proof on Base, no owner key, no mutations
+- **Reproducible builds** — anyone can verify the image matches the source
 
 ## CI
 
-GitHub Actions on push/PR to `main`: format (rustfmt), lint (clippy), security audit, unit tests, build. Docker push disabled in this repo.
+- **CI workflow** — on push: format, lint, audit, test, build static musl binaries
+- **Build Sealed Image** — manual dispatch: builds VHD from source, uploads as artifact
+- Docker push disabled (production images are separate)
 
 ## License
 
