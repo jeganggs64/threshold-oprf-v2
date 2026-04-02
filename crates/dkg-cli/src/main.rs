@@ -410,6 +410,101 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
             &r3.verification_share[..16.min(r3.verification_share.len())]
         );
     }
+    // ------------------------------------------------------------------
+    // Write dkg-data.json (for contract deployment + deployment records)
+    // ------------------------------------------------------------------
+    let dkg_data = serde_json::json!({
+        "groupPublicKey": format!("0x{}", &group_public_key[..64.min(group_public_key.len())].chars().chain(std::iter::repeat('0')).take(64).collect::<String>()),
+        "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
+        "threshold": threshold,
+        "nodeCount": round3_results.len(),
+        "nodes": round3_results.iter().map(|r3| {
+            serde_json::json!({
+                "nodeId": r3.node_id,
+                "dkgCommitment": "0x",
+                "attestationReport": "0x",
+                "certChain": "0x",
+                "verificationShare": format!("0x{}", &r3.verification_share[..64.min(r3.verification_share.len())].chars().chain(std::iter::repeat('0')).take(64).collect::<String>())
+            })
+        }).collect::<Vec<_>>()
+    });
+
+    let dkg_data_path = "dkg-data.json";
+    std::fs::write(dkg_data_path, serde_json::to_string_pretty(&dkg_data)?)?;
+    println!("  Written: {dkg_data_path}");
+
+    // ------------------------------------------------------------------
+    // Optional: deploy contract to Base (if env vars are set)
+    // ------------------------------------------------------------------
+    let deployer_key = std::env::var("DEPLOYER_PRIVATE_KEY").ok();
+    let rpc_url = std::env::var("RPC_URL").ok();
+
+    if let (Some(key), Some(rpc)) = (deployer_key, rpc_url) {
+        if key.is_empty() || rpc.is_empty() {
+            println!("\n  DEPLOYER_PRIVATE_KEY or RPC_URL is empty — skipping contract deployment");
+        } else {
+            println!("\n[Deploy] Posting DKG record on-chain...");
+            println!("  RPC: {rpc}");
+
+            // Copy dkg-data.json to contracts/ and run forge script
+            let contracts_dir = std::path::Path::new("contracts");
+            if contracts_dir.exists() {
+                std::fs::copy(dkg_data_path, contracts_dir.join("dkg-data.json"))?;
+
+                // Write .env for forge
+                std::fs::write(
+                    contracts_dir.join(".env"),
+                    format!("DEPLOYER_PRIVATE_KEY={key}\nRPC_URL={rpc}\n"),
+                )?;
+
+                // Try to run forge script
+                let forge_path = std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".foundry/bin/forge"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("forge"));
+
+                let status = std::process::Command::new(&forge_path)
+                    .current_dir(contracts_dir)
+                    .args([
+                        "script",
+                        "script/Deploy.s.sol:DeployScript",
+                        "--rpc-url",
+                        &rpc,
+                        "--broadcast",
+                    ])
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => {
+                        println!("[Deploy] Contract deployed successfully!");
+                    }
+                    Ok(s) => {
+                        println!(
+                            "[Deploy] WARNING: forge script exited with code {}",
+                            s.code().unwrap_or(-1)
+                        );
+                        println!("  You can deploy manually: cd contracts && bash deploy.sh");
+                    }
+                    Err(e) => {
+                        println!("[Deploy] WARNING: could not run forge: {e}");
+                        println!(
+                            "  Install foundry: curl -L https://foundry.paradigm.xyz | bash && foundryup"
+                        );
+                        println!("  Then deploy manually: cd contracts && bash deploy.sh");
+                    }
+                }
+
+                // Clean up .env (don't leave private key on disk)
+                let _ = std::fs::remove_file(contracts_dir.join(".env"));
+            } else {
+                println!("  WARNING: contracts/ directory not found — skipping deployment");
+                println!("  Deploy manually with: cd contracts && bash deploy.sh");
+            }
+        }
+    } else {
+        println!("\n  Set DEPLOYER_PRIVATE_KEY and RPC_URL to auto-deploy the on-chain record");
+        println!("  Or deploy manually: cd contracts && bash deploy.sh");
+    }
+
     println!();
     println!("DKG ceremony completed successfully.");
 
