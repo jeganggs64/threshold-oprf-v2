@@ -26,14 +26,19 @@ fi
 source "$ENV_FILE"
 
 # Validate required vars
-for var in TOPRF_NODE_URLS TOPRF_DKG_HOST TOPRF_SSH_KEY; do
+for var in TOPRF_NODE_URLS TOPRF_DKG_HOST TOPRF_KEY_NAME; do
     if [[ -z "${!var:-}" ]]; then
         echo "Error: $var is not set in $ENV_FILE"
         exit 1
     fi
 done
 
-TOPRF_SSH_KEY="${TOPRF_SSH_KEY/#\~/$HOME}"
+SSH_KEY_FILE="$HOME/.ssh/${TOPRF_KEY_NAME}.pem"
+if [[ ! -f "$SSH_KEY_FILE" ]]; then
+    echo "Error: SSH key not found: $SSH_KEY_FILE"
+    echo "Run deploy-nodes.sh first to create it"
+    exit 1
+fi
 DEPLOYER_PRIVATE_KEY="${DEPLOYER_PRIVATE_KEY:-}"
 RPC_URL="${RPC_URL:-https://sepolia.base.org}"
 
@@ -61,7 +66,7 @@ done
 # Upload .env to DKG host
 echo ""
 echo "=== Uploading credentials to DKG host ==="
-ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$TOPRF_DKG_HOST" "
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
     cat > ~/.env <<ENVEOF
 DEPLOYER_PRIVATE_KEY=$DEPLOYER_PRIVATE_KEY
 RPC_URL=$RPC_URL
@@ -91,10 +96,10 @@ if [[ -n "$DEPLOYER_PRIVATE_KEY" ]]; then
 
     if [[ -n "$CONTRACTS_TAR" ]]; then
         echo "  Uploading contracts..."
-        scp -q -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" \
+        scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
             "$CONTRACTS_TAR" ec2-user@"$TOPRF_DKG_HOST":~
 
-        ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$TOPRF_DKG_HOST" "
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
             mkdir -p ~/contracts
             tar xzf ~/contracts.tar.gz -C ~/contracts
         "
@@ -102,7 +107,7 @@ if [[ -n "$DEPLOYER_PRIVATE_KEY" ]]; then
 
         # Install foundry if not present
         echo "  Checking foundry..."
-        ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$TOPRF_DKG_HOST" "
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
             if ! command -v forge &>/dev/null; then
                 echo '  Installing foundry...'
                 curl -sL https://foundry.paradigm.xyz | bash 2>&1 | tail -1
@@ -120,7 +125,7 @@ fi
 # Run DKG
 echo ""
 echo "=== Running DKG ceremony ==="
-ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$TOPRF_DKG_HOST" "
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
     cd ~
     chmod +x ~/toprf-dkg-cli 2>/dev/null || true
     ./toprf-dkg-cli init --nodes '$TOPRF_NODE_URLS'
@@ -139,7 +144,7 @@ done
 # Download dkg-data.json
 echo ""
 echo "=== Downloading DKG data ==="
-scp -q -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" \
+scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
     ec2-user@"$TOPRF_DKG_HOST":~/dkg-data.json \
     "$REPO_ROOT/dkg-data.json" 2>/dev/null || true
 

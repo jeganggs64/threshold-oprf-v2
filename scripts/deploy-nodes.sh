@@ -27,15 +27,12 @@ fi
 source "$ENV_FILE"
 
 # Validate required vars
-for var in TOPRF_REGIONS TOPRF_KEY_NAME TOPRF_SSH_KEY TOPRF_IMAGE_DIR; do
+for var in TOPRF_REGIONS TOPRF_KEY_NAME TOPRF_IMAGE_DIR; do
     if [[ -z "${!var:-}" ]]; then
         echo "Error: $var is not set in $ENV_FILE"
         exit 1
     fi
 done
-
-# Expand tilde in SSH key path
-TOPRF_SSH_KEY="${TOPRF_SSH_KEY/#\~/$HOME}"
 
 # Defaults
 TOPRF_INSTANCE_TYPE="${TOPRF_INSTANCE_TYPE:-c5a.xlarge}"
@@ -71,10 +68,6 @@ if [[ ! -f "$TOPRF_IMAGE_DIR/toprf-node-enclave.tar.gz" ]]; then
 fi
 if [[ ! -f "$TOPRF_IMAGE_DIR/toprf-node" ]]; then
     echo "Error: $TOPRF_IMAGE_DIR/toprf-node not found"
-    exit 1
-fi
-if [[ ! -f "$TOPRF_SSH_KEY" ]]; then
-    echo "Error: SSH key not found: $TOPRF_SSH_KEY"
     exit 1
 fi
 
@@ -113,13 +106,37 @@ for region in "${REGIONS[@]}"; do
     SG_IDS[$region]=$sg_id
 done
 
-# ---------- Check key pairs exist ----------
+# ---------- Create or find key pair ----------
+
+SSH_KEY_FILE="$HOME/.ssh/${TOPRF_KEY_NAME}.pem"
+
+# Create key in the first region, import to the rest
+FIRST_REGION="${REGIONS[0]}"
+
+if [[ -f "$SSH_KEY_FILE" ]]; then
+    echo "Using existing SSH key: $SSH_KEY_FILE"
+else
+    echo "Creating new SSH key pair: $TOPRF_KEY_NAME"
+    # Generate a local key pair
+    ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -q
+    chmod 400 "$SSH_KEY_FILE"
+    echo "  Private key: $SSH_KEY_FILE"
+fi
+
+# Ensure the key pair exists in each region
+PUB_KEY_FILE="${SSH_KEY_FILE}.pub"
+if [[ ! -f "$PUB_KEY_FILE" ]]; then
+    ssh-keygen -y -f "$SSH_KEY_FILE" > "$PUB_KEY_FILE"
+fi
 
 for region in "${REGIONS[@]}"; do
-    if ! aws ec2 describe-key-pairs --region "$region" --key-names "$TOPRF_KEY_NAME" > /dev/null 2>&1; then
-        echo "Error: Key pair '$TOPRF_KEY_NAME' not found in region $region"
-        echo "Create it with: aws ec2 import-key-pair --region $region --key-name $TOPRF_KEY_NAME --public-key-material fileb://<public-key-path>"
-        exit 1
+    if aws ec2 describe-key-pairs --region "$region" --key-names "$TOPRF_KEY_NAME" > /dev/null 2>&1; then
+        echo "[${region}] Key pair exists: $TOPRF_KEY_NAME"
+    else
+        echo "[${region}] Importing key pair: $TOPRF_KEY_NAME"
+        aws ec2 import-key-pair --region "$region" \
+            --key-name "$TOPRF_KEY_NAME" \
+            --public-key-material fileb://"$PUB_KEY_FILE" > /dev/null
     fi
 done
 
@@ -195,7 +212,7 @@ echo "=== Waiting for SSH ==="
 for region in "${REGIONS[@]}"; do
     ip="${NODE_IPS[$region]}"
     for attempt in $(seq 1 20); do
-        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$TOPRF_SSH_KEY" \
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY_FILE" \
             ec2-user@"$ip" "echo OK" > /dev/null 2>&1; then
             echo "[${region}] SSH ready: $ip"
             break
@@ -221,7 +238,7 @@ setup_node() {
     echo "[${region}] Setting up $ip (node $node_id)..."
 
     # Step 4: Install packages
-    ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$ip" "
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
         sudo dnf install -y -q aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel docker socat 2>&1 | tail -1
         sudo systemctl enable --now docker 2>&1 | tail -1
         sudo systemctl enable --now nitro-enclaves-allocator 2>&1 | tail -1
@@ -236,25 +253,25 @@ AEOF
     " 2>&1
 
     # Step 5: Upload artifacts
-    scp -q -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" \
+    scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
         "$TOPRF_IMAGE_DIR/toprf-node-enclave.tar.gz" \
         "$TOPRF_IMAGE_DIR/toprf-node" \
         ec2-user@"$ip":~
 
     # Upload CLI binaries if specified
     if [[ -n "$TOPRF_CLI_DIR" && -d "$TOPRF_CLI_DIR" ]]; then
-        scp -q -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" \
+        scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
             "$TOPRF_CLI_DIR"/toprf-dkg-cli \
             "$TOPRF_CLI_DIR"/toprf-reshare-cli \
             ec2-user@"$ip":~ 2>/dev/null || true
-        ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$ip" \
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" \
             "chmod +x ~/toprf-dkg-cli ~/toprf-reshare-cli 2>/dev/null" || true
     fi
 
     # Step 6: Load image, build EIF
     if [[ "$TOPRF_MODE" == "genesis" ]]; then
         # Genesis: create per-node init.sh
-        ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$ip" "
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
             sudo docker load < ~/toprf-node-enclave.tar.gz 2>&1 | tail -1
 
             cat > /tmp/init.sh <<SEOF
@@ -281,7 +298,7 @@ DEOF
         " 2>&1
     else
         # Join mode: use standard image as-is
-        ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$ip" "
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
             sudo docker load < ~/toprf-node-enclave.tar.gz 2>&1 | tail -1
             sudo nitro-cli build-enclave --docker-uri toprf-node-enclave:latest --output-file ~/toprf-node.eif 2>&1 | grep PCR0
         " 2>&1
@@ -293,7 +310,7 @@ DEOF
         debug_flag="--debug-mode"
     fi
 
-    ssh -o StrictHostKeyChecking=no -i "$TOPRF_SSH_KEY" ec2-user@"$ip" "
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
         sudo nitro-cli run-enclave --eif-path ~/toprf-node.eif \
             --cpu-count 2 --memory 256 --enclave-cid 16 $debug_flag 2>&1 | grep Started
         sleep 2
@@ -336,9 +353,12 @@ for ip in "${IP_LIST[@]}"; do
 done
 
 echo ""
+echo "SSH key: $SSH_KEY_FILE"
+echo ""
 echo "For run-dkg.env:"
 echo "  TOPRF_NODE_URLS=\"$NODE_URLS\""
 echo "  TOPRF_DKG_HOST=\"${IP_LIST[0]}\""
+echo "  TOPRF_KEY_NAME=\"$TOPRF_KEY_NAME\""
 echo ""
 
 if [[ "$TOPRF_MODE" == "genesis" ]]; then
