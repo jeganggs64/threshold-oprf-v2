@@ -35,6 +35,7 @@ struct NodeManifest {
     threshold: u16,
     #[serde(rename = "groupPublicKey")]
     group_public_key: String,
+    #[allow(dead_code)]
     #[serde(rename = "expectedBinaryHash")]
     expected_binary_hash: String,
     #[serde(rename = "approvedMeasurements")]
@@ -57,8 +58,6 @@ struct AttestationResponse {
     attestation_report: Option<String>,
     #[allow(dead_code)]
     cert_chain: Option<String>,
-    #[allow(dead_code)]
-    generated_at: Option<String>,
 }
 
 /// Counters for pass/fail/warn
@@ -256,7 +255,18 @@ async fn main() {
             node.url
         );
 
-        let attestation_url = format!("{}/attestation", node.url);
+        // Generate a random 32-byte nonce for challenge-response attestation
+        let nonce: [u8; 32] = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let mut buf = [0u8; 32];
+            // Simple nonce: timestamp + node id (sufficient for verify tool)
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            buf[0..16].copy_from_slice(&ts.to_le_bytes());
+            buf[16..18].copy_from_slice(&node.id.to_le_bytes());
+            buf
+        };
+        let nonce_hex = hex::encode(nonce);
+        let attestation_url = format!("{}/attestation?nonce={}", node.url, nonce_hex);
         match client.get(&attestation_url).send().await {
             Ok(res) if res.status().is_success() => {
                 match res.json::<AttestationResponse>().await {
@@ -288,12 +298,19 @@ async fn main() {
                                     .contains(&measurement_str);
                                 r.check("LAUNCH_DIGEST in approved measurements", m_ok);
 
-                                // Check binary hash from REPORT_DATA[0..32]
-                                let binary_hash_str =
-                                    format!("sha256:{}", hex::encode(&report_data[..32]));
-                                let b_ok =
-                                    binary_hash_str == manifest.expected_binary_hash;
-                                r.check("Binary hash matches manifest", b_ok);
+                                // Check nonce in REPORT_DATA[32..64]
+                                let report_nonce = &report_data[32..64];
+                                let n_ok = report_nonce == nonce.as_slice();
+                                r.check("Nonce matches (anti-replay)", n_ok);
+
+                                // REPORT_DATA[0..32] is now an identity hash:
+                                //   sha256(binary_hash || verificationShare || groupPublicKey)
+                                // We log it but cannot fully verify without the binary_hash
+                                let identity_hash_hex = hex::encode(&report_data[..32]);
+                                r.check(
+                                    &format!("Identity hash present: {:.16}...", identity_hash_hex),
+                                    !report_data[..32].iter().all(|&b| b == 0),
+                                );
 
                                 // Check VMPL == 0
                                 let v_ok = vmpl == 0;

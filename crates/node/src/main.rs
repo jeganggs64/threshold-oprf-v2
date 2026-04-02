@@ -60,9 +60,9 @@ pub struct NodeState {
     /// Tracks attestation report digests already processed by /reshare
     /// to prevent replay attacks. Entries are evicted after RESHARE_SEEN_TTL.
     pub reshare_seen: std::sync::Mutex<Vec<([u8; 32], std::time::Instant)>>,
-    /// Cached AMD SEV-SNP attestation report served by GET /attestation.
-    /// None in dev/test environments without real SNP hardware.
-    pub cached_attestation: std::sync::RwLock<Option<snp_endpoint::AttestationResponse>>,
+    /// SHA-256 hash of the node binary, computed at boot. Used in attestation
+    /// REPORT_DATA[0..32] as part of the identity hash.
+    pub binary_hash: Option<String>,
     /// Per-device rate limiter for /partial-evaluate (max 5 evaluations per day).
     pub rate_limiter: rate_limit::RateLimiter,
     /// Well-known config fetched at boot. None in dev/test mode (no --well-known-url).
@@ -71,6 +71,9 @@ pub struct NodeState {
     pub data_dir: Option<String>,
     /// Guards against concurrent join operations (TOCTOU protection).
     pub join_in_progress: std::sync::Mutex<()>,
+    /// Ephemeral X25519 keypair for ECIES decryption in join mode.
+    /// Generated at boot when --join is specified.
+    pub join_keypair: Option<(x25519_dalek::StaticSecret, x25519_dalek::PublicKey)>,
 }
 
 #[allow(dead_code)]
@@ -262,14 +265,42 @@ async fn main() {
         None
     };
 
+    // Compute sha256 of own binary at boot (for attestation identity hash)
+    let binary_hash = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read(&path).ok())
+        .map(|bytes| {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(&bytes))
+        });
+    if let Some(ref h) = binary_hash {
+        info!(hash = %h, "computed binary hash");
+    } else {
+        warn!("could not compute binary hash (non-fatal)");
+    }
+
+    // Generate ephemeral X25519 keypair in join mode for ECIES decryption
+    let join_keypair = if join_mode {
+        let (secret, pubkey_bytes) = toprf_seal::ecies::generate_keypair();
+        let pubkey = x25519_dalek::PublicKey::from(pubkey_bytes);
+        info!(
+            ephemeral_pubkey = %hex::encode(pubkey.as_bytes()),
+            "generated X25519 keypair for join mode ECIES"
+        );
+        Some((secret, pubkey))
+    } else {
+        None
+    };
+
     let state = Arc::new(NodeState {
         loaded_key: OnceLock::new(),
         reshare_seen: std::sync::Mutex::new(Vec::with_capacity(64)),
-        cached_attestation: std::sync::RwLock::new(None),
+        binary_hash,
         rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
         well_known_config,
         data_dir,
         join_in_progress: std::sync::Mutex::new(()),
+        join_keypair,
     });
 
     // -- Load key from file (testing/dev) --
@@ -336,6 +367,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/join-info", get(join::join_info_handler))
         .route("/attestation", get(snp_endpoint::attestation_handler))
         .route("/partial-evaluate", post(evaluate::partial_evaluate_handler))
         .route("/reshare", post(reshare_handler::reshare_handler))
