@@ -128,9 +128,12 @@ pub fn reject_debug_mode(attestation: &VerifiedAttestation) -> Result<(), String
 // COSE_Sign1 parsing
 // ---------------------------------------------------------------------------
 
+/// Parsed COSE_Sign1 components: (protected_headers, payload, signature).
+type CoseSign1Parts = (Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// Parse a COSE_Sign1 structure from raw CBOR bytes.
 /// Returns (protected_header_bytes, payload_bytes, signature_bytes).
-fn parse_cose_sign1(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+fn parse_cose_sign1(data: &[u8]) -> Result<CoseSign1Parts, String> {
     let value: ciborium::Value =
         ciborium::from_reader(data).map_err(|e| format!("CBOR parse error: {e}"))?;
 
@@ -369,7 +372,7 @@ fn verify_cose_signature(
     let pk_bytes = &spki.subject_public_key.data;
 
     // Build P-384 verifying key from the raw public key bytes
-    let verifying_key = VerifyingKey::from_sec1_bytes(&pk_bytes)
+    let verifying_key = VerifyingKey::from_sec1_bytes(pk_bytes)
         .map_err(|e| format!("invalid P-384 public key in signing cert: {e}"))?;
 
     // The COSE ES384 signature is raw r||s (48 + 48 = 96 bytes)

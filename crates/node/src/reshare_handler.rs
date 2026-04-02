@@ -172,7 +172,8 @@ pub async fn reshare_handler(
             // When needed, move the old SNP logic here.
             return Err((
                 StatusCode::NOT_IMPLEMENTED,
-                format!("SNP/Azure CVM attestation verification not yet implemented for resharing"),
+                "SNP/Azure CVM attestation verification not yet implemented for resharing"
+                    .to_string(),
             )
                 .into_response());
         }
@@ -278,6 +279,7 @@ pub async fn reshare_handler(
 /// 2. PCR0, PCR1, PCR2 match expected values from well-known config
 /// 3. Enclave is not in debug mode (all-zero PCRs)
 /// 4. user_data binds to the target's X25519 public key (SHA-256)
+#[allow(clippy::result_large_err)]
 fn verify_nitro_attestation(
     attestation_bytes: &[u8],
     target_pubkey: &[u8],
