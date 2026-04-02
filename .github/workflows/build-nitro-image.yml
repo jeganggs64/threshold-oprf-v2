@@ -40,6 +40,21 @@ jobs:
             echo "Docker image saved (build EIF locally on an EC2 instance with nitro-cli)"
           fi
 
+      - name: Record build environment for reproducibility
+        run: |
+          cat > artifacts/build-info.json <<EOF
+          {
+            "commit": "${{ github.sha }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "rust_version": "$(rustc --version)",
+            "rust_commit": "$(rustc -vV | grep 'commit-hash' | awk '{print $2}')",
+            "cargo_version": "$(cargo --version)",
+            "alpine_digest": "$(grep 'FROM alpine' image/nitro/Dockerfile | grep -o 'sha256:[a-f0-9]*')",
+            "os": "$(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+          }
+          EOF
+          cat artifacts/build-info.json
+
       - name: Collect artifacts
         run: |
           cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
