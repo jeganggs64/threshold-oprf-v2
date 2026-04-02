@@ -58,6 +58,12 @@ jobs:
         with:
           name: binaries
           path: artifacts/
+      - name: Package contracts for deployment
+        run: tar czf contracts.tar.gz -C contracts src script foundry.toml lib .env.example
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contracts
+          path: contracts.tar.gz
 
   integration:
     name: Integration Tests

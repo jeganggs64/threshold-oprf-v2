@@ -54,11 +54,12 @@ gh run list --repo <repo> --workflow "Build Nitro Enclave Image (EIF)" --status 
 gh run download <run-id> --name nitro-enclave-image -D /tmp/nitro-artifacts
 ```
 
-Also download the CLI binaries from the latest CI run:
+Also download the CLI binaries and contracts from the latest CI run:
 
 ```bash
 gh run list --repo <repo> --workflow CI --status success --limit 1
 gh run download <run-id> --name binaries -D /tmp/cli-binaries
+gh run download <run-id> --name contracts -D /tmp/contracts
 chmod +x /tmp/cli-binaries/*
 ```
 
@@ -203,28 +204,51 @@ fetch the well-known config from the internet. Since the enclave has no
 network access, this times out after 10 seconds and continues. The health
 check will fail if you run it too early.
 
-### 8. Run DKG
+### 8. Run DKG + deploy on-chain registry
 
-The DKG CLI is a Linux binary — run it from one of the EC2 instances or
-any Linux machine that can reach all nodes.
+The DKG CLI is a Linux binary — run it from one of the EC2 instances.
+If `DEPLOYER_PRIVATE_KEY` and `RPC_URL` are set in `.env`, the CLI
+automatically deploys the TOPRFRegistry contract to Base after DKG.
 
 ```bash
-# Upload CLI binaries + .env to an instance
+# Upload CLI binaries, contracts, and .env to an instance
 scp -i <key> /tmp/cli-binaries/toprf-dkg-cli ec2-user@<ip>:~
 scp -i <key> /tmp/cli-binaries/toprf-reshare-cli ec2-user@<ip>:~
+scp -i <key> /tmp/contracts/contracts.tar.gz ec2-user@<ip>:~
 scp -i <key> .env ec2-user@<ip>:~
 
-# SSH in and run DKG
+# SSH in and set up
 ssh -i <key> ec2-user@<ip>
 chmod +x ~/toprf-dkg-cli ~/toprf-reshare-cli
+
+# Unpack contracts
+mkdir -p ~/contracts && tar xzf ~/contracts.tar.gz -C ~/contracts
+
+# Install foundry (needed for contract deployment)
+curl -L https://foundry.paradigm.xyz | bash
+source ~/.bashrc
+foundryup
+
+# Create .env for the DKG CLI (reads DEPLOYER_PRIVATE_KEY and RPC_URL)
+# Edit .env and add your deployer private key (hex, no 0x prefix)
+# RPC_URL defaults to https://sepolia.base.org
+
+# Run DKG (from ~ so it finds ./contracts/ and ./.env)
 ./toprf-dkg-cli init --nodes http://<node1-ip>:3001,http://<node2-ip>:3001,http://<node3-ip>:3001
 ```
 
-The CLI reads `DEPLOYER_PRIVATE_KEY` and `RPC_URL` from the `.env` file.
-If set, it will deploy the TOPRFRegistry contract to Base after DKG completes.
-If not set, it writes `dkg-data.json` for manual deployment later.
+The CLI:
+1. Runs the FROST DKG ceremony (rounds 1-3)
+2. Each node self-seals its key share
+3. Writes `dkg-data.json`
+4. If `.env` has `DEPLOYER_PRIVATE_KEY` + `RPC_URL` and `contracts/` exists:
+   deploys the TOPRFRegistry contract via forge
+5. Prints the contract address
 
 After DKG, each node's health should return `{"status":"ready","node_id":N}`.
+
+The deployed contract is immutable — no owner, no functions, no mutations.
+View it on [Basescan Sepolia](https://sepolia.basescan.org).
 
 ### 9. Test evaluations
 

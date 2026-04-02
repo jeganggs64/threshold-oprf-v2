@@ -133,23 +133,25 @@ fn request_nsm_attestation(user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, St
     ciborium::into_writer(&request_payload, &mut request_buf)
         .map_err(|e| format!("CBOR encode error: {e}"))?;
 
-    // Allocate response buffer (16KB should be plenty for an attestation document)
-    let mut response_buf = vec![0u8; 16384];
+    // Allocate response buffer. Nitro attestation documents are typically ~4-5KB
+    // but cert chains vary by region. 32KB covers all observed cases.
+    let mut response_buf = vec![0u8; 32768];
 
-    // NSM ioctl
+    // NSM ioctl — the kernel driver uses struct iovec (pointer + size_t),
+    // so lengths must be usize, not u32.
     #[repr(C)]
     struct NsmMessage {
         request: *const u8,
-        request_len: u32,
+        request_len: usize,
         response: *mut u8,
-        response_len: u32,
+        response_len: usize,
     }
 
     let mut msg = NsmMessage {
         request: request_buf.as_ptr(),
-        request_len: request_buf.len() as u32,
+        request_len: request_buf.len(),
         response: response_buf.as_mut_ptr(),
-        response_len: response_buf.len() as u32,
+        response_len: response_buf.len(),
     };
 
     // ioctl number: _IOWR(0x0A, 0, NsmMessage)
@@ -175,8 +177,7 @@ fn request_nsm_attestation(user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, St
     }
 
     // Parse CBOR response
-    let response_len = msg.response_len as usize;
-    let response_data = &response_buf[..response_len];
+    let response_data = &response_buf[..msg.response_len];
 
     let response_value: ciborium::Value = ciborium::from_reader(response_data)
         .map_err(|e| format!("NSM response CBOR parse error: {e}"))?;
