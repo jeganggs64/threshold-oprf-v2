@@ -18,18 +18,27 @@ jobs:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools gdisk dosfstools qemu-utils cpio
-      - run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node
+
+      - name: Pin package versions
+        run: bash image/update-lock.sh
+
       - name: Build sealed VHD
         run: |
           sudo bash image/build-image.sh \
             --binary ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/toprf-node \
             --output ${{ github.workspace }}/toprf-node-sealed.vhd
+
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
           cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
           cp toprf-node-sealed.vhd artifacts/
-          sha256sum artifacts/* | tee artifacts/hashes.txt
+          cp image/package-lock.json artifacts/
+          sha256sum artifacts/toprf-node artifacts/toprf-node-sealed.vhd | tee artifacts/hashes.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: azure-sealed-image

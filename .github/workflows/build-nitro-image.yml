@@ -27,12 +27,6 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/toprf-node image/nitro/toprf-node
           docker build -t toprf-node-enclave -f image/nitro/Dockerfile image/nitro/
 
-      - name: Install nitro-cli
-        run: |
-          sudo amazon-linux-extras install aws-nitro-enclaves-cli 2>/dev/null || \
-          sudo apt-get install -y aws-nitro-enclaves-cli 2>/dev/null || \
-          echo "nitro-cli not available — saving Docker image instead"
-
       - name: Build EIF or save Docker image
         run: |
           mkdir -p artifacts
@@ -40,12 +34,17 @@ jobs:
             nitro-cli build-enclave \
               --docker-uri toprf-node-enclave:latest \
               --output-file artifacts/toprf-node.eif
-            echo "EIF built successfully"
+            nitro-cli describe-eif --eif-path artifacts/toprf-node.eif | tee artifacts/pcr-values.json
           else
             docker save toprf-node-enclave:latest | gzip > artifacts/toprf-node-enclave.tar.gz
-            echo "Docker image saved (nitro-cli not available in CI — build EIF locally with nitro-cli)"
+            echo "Docker image saved (build EIF locally on an EC2 instance with nitro-cli)"
           fi
-          sha256sum artifacts/* | tee artifacts/hashes.txt
+
+      - name: Collect artifacts
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
+          sha256sum artifacts/toprf-node artifacts/toprf-node-enclave.tar.gz 2>/dev/null | tee artifacts/hashes.txt
+          sha256sum artifacts/toprf-node.eif 2>/dev/null >> artifacts/hashes.txt || true
 
       - uses: actions/upload-artifact@v4
         with:
