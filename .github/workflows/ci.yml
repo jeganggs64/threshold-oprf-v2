@@ -34,7 +34,8 @@ jobs:
       - run: cargo test --release
 
   build:
-    name: Build Static Binaries
+    name: Build Binaries + Sealed Image
+    needs: [check, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -42,18 +43,34 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node -p toprf-dkg-node -p toprf-dkg-cli -p toprf-verify
-      - name: Collect binaries
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gdisk dosfstools qemu-utils cpio
+
+      - name: Build static binaries
+        run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node -p toprf-dkg-node -p toprf-dkg-cli -p toprf-verify
+
+      - name: Build sealed VHD
+        run: |
+          sudo bash image/build-image.sh \
+            --binary target/x86_64-unknown-linux-musl/release/toprf-node \
+            --output toprf-node-sealed.vhd
+
+      - name: Collect artifacts
         run: |
           mkdir -p artifacts
           cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
           cp target/x86_64-unknown-linux-musl/release/toprf-dkg-node artifacts/
           cp target/x86_64-unknown-linux-musl/release/toprf-dkg-cli artifacts/
           cp target/x86_64-unknown-linux-musl/release/toprf-verify artifacts/
+          cp toprf-node-sealed.vhd artifacts/
+          sha256sum artifacts/* | tee artifacts/hashes.txt
+
       - uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: build-artifacts
           path: artifacts/
 
   integration:
@@ -67,37 +84,3 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y jq
       - run: bash scripts/integration-test.sh
       - run: bash scripts/dkg-integration-test.sh
-
-  sealed-image:
-    name: Build Sealed Image
-    needs: [check, test, build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: binaries/
-      - name: Install image build tools
-        run: sudo apt-get update && sudo apt-get install -y gdisk dosfstools qemu-utils cpio busybox-static ca-certificates grub-efi-amd64-signed shim-signed
-      - name: Download Azure kernel
-        run: |
-          sudo apt-get install -y linux-image-azure || sudo apt-get install -y linux-image-generic
-      - name: Build sealed VHD
-        run: |
-          sudo bash image/build-image.sh \
-            --binary binaries/toprf-node \
-            --output toprf-node-sealed.vhd
-      - name: Compute hashes
-        run: |
-          echo "=== Hashes ===" | tee hashes.txt
-          sha256sum toprf-node-sealed.vhd | tee -a hashes.txt
-          sha256sum binaries/toprf-node | tee -a hashes.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sealed-image
-          path: toprf-node-sealed.vhd
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hashes
-          path: hashes.txt
