@@ -4,59 +4,20 @@
 # Superpowers (specs, plans — internal tooling)
 docs/superpowers/
 
-# Generated TLS certificates
-certs/
-
 # Build artifacts
 /target/
-__pycache__/
-
-# Ceremony outputs (key shares)
-ceremony/
-admin-shares/
-node-shares/
-dkg-data.json
 
 # Environment files
 .env
 .env.*
-deploy/config.env
-deploy/nodes.json
-deploy/ecs-state.env
-deploy/privatelink-state.env
-lambda/config.env
+scripts/*.env
 
-# Lambda build output
-lambda/dist/
-lambda/node_modules/
-
-# Generated configs
-deploy/coordinator-configs/
-docker/coordinator-node-*.json
+# DKG outputs
+dkg-data.json
 
 # Private keys
 *.key
 *.pem
-
-# SSH keys
-deploy/*.pem
-deploy/*.pub
-
-# SAM build artifacts
-lambda/rotation/.aws-sam/
-lambda/rotation/samconfig.toml
-
-# GCP config
-lambda/gcp-wif-config.json
-
-# Test key shares
-test-admin-shares/
-
-# Generated docs (PDFs from LaTeX)
-docs/*.pdf
-docs/*.tex
-docs/*.aux
-docs/*.log
 
 # Foundry build artifacts
 contracts/out/

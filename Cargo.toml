@@ -3,8 +3,6 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/dkg-cli",
-    "crates/dkg-node",
-    "crates/keygen",
     "crates/node",
     "crates/reshare-cli",
     "crates/seal",

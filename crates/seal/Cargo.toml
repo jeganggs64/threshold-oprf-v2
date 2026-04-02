@@ -35,7 +35,3 @@ tempfile = "3"
 [[bin]]
 name = "toprf-measure"
 path = "src/bin/toprf-measure.rs"
-
-[[bin]]
-name = "toprf-init-encrypt"
-path = "src/bin/toprf-init-encrypt.rs"
