@@ -1,328 +1,56 @@
-name: Build Sealed AMIs
+name: Build Sealed Image
 
 on:
   workflow_dispatch:
-    inputs:
-      region:
-        description: 'AWS region'
-        default: 'us-east-2'
-        required: true
-      key_name:
-        description: 'EC2 key pair name (must exist in the target region)'
-        required: true
-      build_dkg:
-        description: 'Also build DKG node AMI'
-        type: boolean
-        default: true
-
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  INSTANCE_TYPE: c6a.large
 
 jobs:
-  build-binaries:
-    name: Build Static Binaries
+  build:
+    name: Build VHD
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gdisk dosfstools qemu-utils cpio \
+            grub-efi-amd64-signed shim-signed \
+            busybox-static ca-certificates
+
+      - name: Install Rust + musl target
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node -p toprf-dkg-node
-      - uses: actions/upload-artifact@v4
+
+      - name: Install musl tools
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node
+
+      - name: Build sealed image
+        run: |
+          sudo bash image/build-image.sh \
+            --binary target/x86_64-unknown-linux-musl/release/toprf-node \
+            --output toprf-node-sealed.vhd
+
+      - name: Upload VHD
+        uses: actions/upload-artifact@v4
         with:
-          name: binaries
-          path: |
-            target/x86_64-unknown-linux-musl/release/toprf-node
-            target/x86_64-unknown-linux-musl/release/toprf-dkg-node
+          name: sealed-image
+          path: toprf-node-sealed.vhd
 
-  build-production-ami:
-    name: Build Production Node AMI
-    needs: build-binaries
-    runs-on: ubuntu-latest
-    outputs:
-      ami_id: ${{ steps.create-ami.outputs.ami_id }}
-    steps:
-      - uses: actions/checkout@v5
+      - name: Upload hashes
+        run: |
+          sha256sum toprf-node-sealed.vhd > hashes.txt
+          sha256sum target/x86_64-unknown-linux-musl/release/toprf-node >> hashes.txt
+          cat hashes.txt
 
-      - uses: actions/download-artifact@v4
+      - name: Upload hashes file
+        uses: actions/upload-artifact@v4
         with:
-          name: binaries
-          path: binaries/
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Find base AMI
-        id: base-ami
-        run: |
-          AMI=$(aws ec2 describe-images --owners amazon \
-            --filters "Name=name,Values=al2023-ami-2023*-x86_64" "Name=state,Values=available" \
-            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text)
-          echo "ami=$AMI" >> "$GITHUB_OUTPUT"
-          echo "Base AMI: $AMI"
-
-      - name: Find default VPC
-        id: vpc
-        run: |
-          VPC=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
-            --query 'Vpcs[0].VpcId' --output text)
-          echo "vpc=$VPC" >> "$GITHUB_OUTPUT"
-
-      - name: Create temporary security group
-        id: sg
-        run: |
-          SG=$(aws ec2 create-security-group \
-            --group-name "toprf-ami-build-$$" \
-            --description "Temp SG for AMI build" \
-            --vpc-id "${{ steps.vpc.outputs.vpc }}" \
-            --output text --query GroupId)
-          aws ec2 authorize-security-group-ingress \
-            --group-id "$SG" --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
-          echo "sg=$SG" >> "$GITHUB_OUTPUT"
-
-      - name: Launch build instance
-        id: instance
-        run: |
-          ID=$(aws ec2 run-instances \
-            --image-id "${{ steps.base-ami.outputs.ami }}" \
-            --instance-type "$INSTANCE_TYPE" \
-            --key-name "${{ inputs.key_name }}" \
-            --security-group-ids "${{ steps.sg.outputs.sg }}" \
-            --associate-public-ip-address \
-            --cpu-options AmdSevSnp=enabled \
-            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=toprf-ami-build}]' \
-            --query 'Instances[0].InstanceId' --output text)
-          echo "id=$ID" >> "$GITHUB_OUTPUT"
-          echo "Instance: $ID"
-
-          aws ec2 wait instance-running --instance-ids "$ID"
-          IP=$(aws ec2 describe-instances --instance-ids "$ID" \
-            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
-          echo "IP: $IP"
-
-          # Wait for SSH
-          for i in $(seq 1 60); do
-            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-              -i "${{ runner.temp }}/key.pem" ec2-user@"$IP" 'echo ok' && break
-            sleep 5
-          done
-
-      - name: Write SSH key
-        run: |
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > "${{ runner.temp }}/key.pem"
-          chmod 600 "${{ runner.temp }}/key.pem"
-
-      - name: Upload binary and scripts
-        run: |
-          IP="${{ steps.instance.outputs.ip }}"
-          KEY="${{ runner.temp }}/key.pem"
-          SSH="ssh -o StrictHostKeyChecking=no -i $KEY"
-          SCP="scp -o StrictHostKeyChecking=no -i $KEY"
-
-          $SCP binaries/toprf-node ec2-user@"$IP":/tmp/toprf-node
-          $SCP image/toprf-node.service ec2-user@"$IP":/tmp/toprf-node.service
-          $SCP image/harden.sh ec2-user@"$IP":/tmp/harden.sh
-
-          $SSH ec2-user@"$IP" 'sudo cp /tmp/toprf-node /usr/local/bin/toprf-node && sudo chmod +x /usr/local/bin/toprf-node'
-
-      - name: Run hardening
-        run: |
-          ssh -o StrictHostKeyChecking=no -i "${{ runner.temp }}/key.pem" \
-            ec2-user@"${{ steps.instance.outputs.ip }}" 'sudo bash /tmp/harden.sh'
-
-      - name: Verify hardening
-        run: |
-          ssh -o StrictHostKeyChecking=no -i "${{ runner.temp }}/key.pem" \
-            ec2-user@"${{ steps.instance.outputs.ip }}" '
-            echo -n "SSH: "; test -f /usr/sbin/sshd && echo "BAD" || echo "removed"
-            echo -n "bash: "; test -x /usr/bin/bash && echo "BAD" || echo "removed"
-            echo -n "toprf-node: "; test -x /usr/local/bin/toprf-node && echo "OK" || echo "MISSING"
-            echo -n "service: "; systemctl is-enabled toprf-node 2>/dev/null || echo "NOT ENABLED"
-          '
-
-      - name: Create AMI
-        id: create-ami
-        run: |
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          AMI_NAME="toprf-node-sealed-${TIMESTAMP}"
-          AMI_ID=$(aws ec2 create-image \
-            --instance-id "${{ steps.instance.outputs.id }}" \
-            --name "$AMI_NAME" \
-            --description "Sealed TOPRF node — no SSH, no shell" \
-            --no-reboot \
-            --query 'ImageId' --output text)
-          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
-          echo "AMI: $AMI_ID ($AMI_NAME)"
-          aws ec2 wait image-available --image-ids "$AMI_ID"
-          echo "AMI ready"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          aws ec2 terminate-instances --instance-ids "${{ steps.instance.outputs.id }}" 2>/dev/null || true
-          sleep 10
-          aws ec2 delete-security-group --group-id "${{ steps.sg.outputs.sg }}" 2>/dev/null || true
-
-      - name: Summary
-        run: |
-          echo "## Production Node AMI" >> "$GITHUB_STEP_SUMMARY"
-          echo "- AMI ID: \`${{ steps.create-ami.outputs.ami_id }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Region: \`${{ inputs.region }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- No SSH, no shell, no package manager" >> "$GITHUB_STEP_SUMMARY"
-
-  build-dkg-ami:
-    name: Build DKG Node AMI
-    needs: build-binaries
-    if: ${{ inputs.build_dkg }}
-    runs-on: ubuntu-latest
-    outputs:
-      ami_id: ${{ steps.create-ami.outputs.ami_id }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: binaries/
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Write SSH key
-        run: |
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > "${{ runner.temp }}/key.pem"
-          chmod 600 "${{ runner.temp }}/key.pem"
-
-      - name: Find base AMI
-        id: base-ami
-        run: |
-          AMI=$(aws ec2 describe-images --owners amazon \
-            --filters "Name=name,Values=al2023-ami-2023*-x86_64" "Name=state,Values=available" \
-            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text)
-          echo "ami=$AMI" >> "$GITHUB_OUTPUT"
-
-      - name: Find default VPC
-        id: vpc
-        run: |
-          VPC=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
-            --query 'Vpcs[0].VpcId' --output text)
-          echo "vpc=$VPC" >> "$GITHUB_OUTPUT"
-
-      - name: Create temporary security group
-        id: sg
-        run: |
-          SG=$(aws ec2 create-security-group \
-            --group-name "toprf-dkg-ami-build-$$" \
-            --description "Temp SG for DKG AMI build" \
-            --vpc-id "${{ steps.vpc.outputs.vpc }}" \
-            --output text --query GroupId)
-          aws ec2 authorize-security-group-ingress \
-            --group-id "$SG" --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
-          echo "sg=$SG" >> "$GITHUB_OUTPUT"
-
-      - name: Launch build instance
-        id: instance
-        run: |
-          ID=$(aws ec2 run-instances \
-            --image-id "${{ steps.base-ami.outputs.ami }}" \
-            --instance-type "$INSTANCE_TYPE" \
-            --key-name "${{ inputs.key_name }}" \
-            --security-group-ids "${{ steps.sg.outputs.sg }}" \
-            --associate-public-ip-address \
-            --cpu-options AmdSevSnp=enabled \
-            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=toprf-dkg-ami-build}]' \
-            --query 'Instances[0].InstanceId' --output text)
-          echo "id=$ID" >> "$GITHUB_OUTPUT"
-
-          aws ec2 wait instance-running --instance-ids "$ID"
-          IP=$(aws ec2 describe-instances --instance-ids "$ID" \
-            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
-
-          for i in $(seq 1 60); do
-            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-              -i "${{ runner.temp }}/key.pem" ec2-user@"$IP" 'echo ok' && break
-            sleep 5
-          done
-
-      - name: Upload binary and harden
-        run: |
-          IP="${{ steps.instance.outputs.ip }}"
-          KEY="${{ runner.temp }}/key.pem"
-
-          scp -o StrictHostKeyChecking=no -i "$KEY" binaries/toprf-dkg-node ec2-user@"$IP":/tmp/toprf-dkg-node
-          scp -o StrictHostKeyChecking=no -i "$KEY" image/harden.sh ec2-user@"$IP":/tmp/harden.sh
-
-          ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$IP" '
-            sudo cp /tmp/toprf-dkg-node /usr/local/bin/toprf-dkg-node
-            sudo chmod +x /usr/local/bin/toprf-dkg-node
-
-            # Create DKG service (node-id/threshold/total set via override at launch)
-            sudo tee /etc/systemd/system/toprf-dkg-node.service > /dev/null <<SVCEOF
-          [Unit]
-          Description=TOPRF DKG Node
-          After=network-online.target
-          Wants=network-online.target
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/toprf-dkg-node --node-id 1 --threshold 2 --total 3 --port 3001
-          Environment=RUST_LOG=info
-          Restart=no
-          NoNewPrivileges=yes
-          ProtectSystem=strict
-          ProtectHome=yes
-          PrivateTmp=yes
-          PrivateDevices=no
-          DeviceAllow=/dev/sev-guest rw
-          [Install]
-          WantedBy=multi-user.target
-          SVCEOF
-            sudo systemctl daemon-reload
-            sudo systemctl enable toprf-dkg-node
-
-            # Adjust harden.sh to skip production service install
-            sed -i "s|cp /tmp/toprf-node.service|# skip|" /tmp/harden.sh
-            sed -i "s|systemctl enable toprf-node|# skip|" /tmp/harden.sh
-            sudo bash /tmp/harden.sh
-          '
-
-      - name: Create AMI
-        id: create-ami
-        run: |
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          AMI_NAME="toprf-dkg-node-sealed-${TIMESTAMP}"
-          AMI_ID=$(aws ec2 create-image \
-            --instance-id "${{ steps.instance.outputs.id }}" \
-            --name "$AMI_NAME" \
-            --description "Sealed DKG node — temporary, ceremony only" \
-            --no-reboot \
-            --query 'ImageId' --output text)
-          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
-          echo "AMI: $AMI_ID"
-          aws ec2 wait image-available --image-ids "$AMI_ID"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          aws ec2 terminate-instances --instance-ids "${{ steps.instance.outputs.id }}" 2>/dev/null || true
-          sleep 10
-          aws ec2 delete-security-group --group-id "${{ steps.sg.outputs.sg }}" 2>/dev/null || true
-
-      - name: Summary
-        run: |
-          echo "## DKG Node AMI" >> "$GITHUB_STEP_SUMMARY"
-          echo "- AMI ID: \`${{ steps.create-ami.outputs.ami_id }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Region: \`${{ inputs.region }}\`" >> "$GITHUB_STEP_SUMMARY"
+          name: hashes
+          path: hashes.txt
