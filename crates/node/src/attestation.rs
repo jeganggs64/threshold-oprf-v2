@@ -65,7 +65,8 @@ pub async fn verify_attestation(
         Platform::Test => {
             if std::env::var("TOPRF_ALLOW_TEST_ATTESTATION").unwrap_or_default() != "1" {
                 return Err(AttestationError::Invalid(
-                    "test platform not available — set TOPRF_ALLOW_TEST_ATTESTATION=1 for dev mode".into()
+                    "test platform not available — set TOPRF_ALLOW_TEST_ATTESTATION=1 for dev mode"
+                        .into(),
                 ));
             }
             verify_test(payload, expected_client_data_hash)
@@ -96,8 +97,9 @@ fn verify_ios(
 
     // Decode and verify that the supplied client_data_hash matches the expected
     // hash of the blinded point. This binds the attestation to this request.
-    let provided_hash = hex::decode(client_data_hash_hex)
-        .map_err(|e| AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}")))?;
+    let provided_hash = hex::decode(client_data_hash_hex).map_err(|e| {
+        AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}"))
+    })?;
 
     if provided_hash.as_slice() != expected_client_data_hash.as_slice() {
         return Err(AttestationError::ClientDataHashMismatch);
@@ -124,7 +126,9 @@ fn verify_ios(
 
 // -- Android ---------------------------------------------------------------
 
-async fn verify_android(payload: &AttestationPayload) -> Result<AttestationResult, AttestationError> {
+async fn verify_android(
+    payload: &AttestationPayload,
+) -> Result<AttestationResult, AttestationError> {
     let integrity_token = payload
         .integrity_token
         .as_deref()
@@ -159,8 +163,9 @@ fn verify_test(
         .as_deref()
         .ok_or(AttestationError::MissingField("client_data_hash"))?;
 
-    let provided_hash = hex::decode(client_data_hash_hex)
-        .map_err(|e| AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}")))?;
+    let provided_hash = hex::decode(client_data_hash_hex).map_err(|e| {
+        AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}"))
+    })?;
 
     if provided_hash.as_slice() != expected_client_data_hash.as_slice() {
         return Err(AttestationError::ClientDataHashMismatch);

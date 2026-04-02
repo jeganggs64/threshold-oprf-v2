@@ -53,8 +53,8 @@ pub async fn partial_evaluate_handler(
         .ok_or_else(|| error_response(StatusCode::SERVICE_UNAVAILABLE, "key not loaded"))?;
     let blinded_point = hex_to_point(&req.blinded_point)
         .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("invalid point: {e}")))?;
-    let partial = partial_evaluate(loaded.node_id, &loaded.key_share, &blinded_point)
-        .map_err(|e| {
+    let partial =
+        partial_evaluate(loaded.node_id, &loaded.key_share, &blinded_point).map_err(|e| {
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("eval error: {e}"),

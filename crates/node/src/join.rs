@@ -38,10 +38,10 @@ pub struct JoinInfoResponse {
 pub async fn join_info_handler(
     State(state): State<Arc<NodeState>>,
 ) -> Result<Json<JoinInfoResponse>, (StatusCode, String)> {
-    let (_, pubkey) = state.join_keypair.as_ref().ok_or((
-        StatusCode::NOT_FOUND,
-        "not in join mode".to_string(),
-    ))?;
+    let (_, pubkey) = state
+        .join_keypair
+        .as_ref()
+        .ok_or((StatusCode::NOT_FOUND, "not in join mode".to_string()))?;
     Ok(Json(JoinInfoResponse {
         ephemeral_pubkey: hex::encode(pubkey.as_bytes()),
     }))

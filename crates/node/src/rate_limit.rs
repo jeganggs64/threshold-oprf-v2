@@ -111,7 +111,7 @@ mod tests {
         let id = device(2);
         assert!(rl.check_and_increment(&id).is_ok()); // 1st
         assert!(rl.check_and_increment(&id).is_ok()); // 2nd
-        let result = rl.check_and_increment(&id);     // 3rd — should be rejected
+        let result = rl.check_and_increment(&id); // 3rd — should be rejected
         assert!(result.is_err(), "third request should be rate-limited");
         // retry_after should be positive and no more than the epoch duration
         let retry_after = result.unwrap_err();

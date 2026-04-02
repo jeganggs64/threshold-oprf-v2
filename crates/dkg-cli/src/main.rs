@@ -395,19 +395,14 @@ async fn run_init(
         if &r3.group_public_key != group_public_key {
             return Err(format!(
                 "Group public key mismatch: node {} has {} but node {} has {}",
-                round3_results[0].node_id,
-                group_public_key,
-                r3.node_id,
-                r3.group_public_key
+                round3_results[0].node_id, group_public_key, r3.node_id, r3.group_public_key
             )
             .into());
         }
     }
 
     println!("[Verify] All DKG nodes agree on group public key: {group_public_key}");
-    println!(
-        "[Verify] Threshold: {threshold}, Total shares: {total_shares}\n"
-    );
+    println!("[Verify] Threshold: {threshold}, Total shares: {total_shares}\n");
 
     // ------------------------------------------------------------------
     // Deliver encrypted contributions to production nodes via /reshare/receive
@@ -470,9 +465,7 @@ async fn run_init(
             .send()
             .await?
             .error_for_status()
-            .map_err(|e| {
-                format!("production node {prod_url} rejected reshare/receive: {e}")
-            })?
+            .map_err(|e| format!("production node {prod_url} rejected reshare/receive: {e}"))?
             .json::<ReshareReceiveResponse>()
             .await?;
 

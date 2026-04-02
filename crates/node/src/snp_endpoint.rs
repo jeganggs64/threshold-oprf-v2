@@ -7,7 +7,11 @@
 //!
 //! In dev/test environments without SNP hardware the endpoint returns 503.
 
-use axum::{extract::{Query, State}, http::StatusCode, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -44,10 +48,10 @@ pub async fn attestation_handler(
     // Build REPORT_DATA:
     // [0..32] = sha256(binary_hash || verificationShare || groupPublicKey)
     // [32..64] = nonce (verbatim)
-    let loaded = state
-        .loaded_key
-        .get()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "key not loaded".to_string()))?;
+    let loaded = state.loaded_key.get().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "key not loaded".to_string(),
+    ))?;
 
     let mut report_data = [0u8; 64];
 

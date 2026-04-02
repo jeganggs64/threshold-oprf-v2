@@ -369,7 +369,10 @@ async fn main() {
         .route("/health", get(health))
         .route("/join-info", get(join::join_info_handler))
         .route("/attestation", get(snp_endpoint::attestation_handler))
-        .route("/partial-evaluate", post(evaluate::partial_evaluate_handler))
+        .route(
+            "/partial-evaluate",
+            post(evaluate::partial_evaluate_handler),
+        )
         .route("/reshare", post(reshare_handler::reshare_handler))
         .route("/reshare/receive", post(join::reshare_receive_handler))
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation

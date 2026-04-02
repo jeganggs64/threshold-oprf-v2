@@ -178,17 +178,18 @@ pub async fn reshare_handler(
     if let Some(ref wk_config) = state.well_known_config {
         // Check LAUNCH_DIGEST against approved measurements list
         let formatted_measurement = format!("sha384:{}", report_measurement_hex);
-        if !wk_config.approved_measurements.contains(&formatted_measurement) {
+        if !wk_config
+            .approved_measurements
+            .contains(&formatted_measurement)
+        {
             warn!(
                 got = %formatted_measurement,
                 approved = ?wk_config.approved_measurements,
                 "reshare: measurement not in approved list"
             );
-            return Err((
-                StatusCode::FORBIDDEN,
-                "Unapproved measurement".to_string(),
-            )
-                .into_response());
+            return Err(
+                (StatusCode::FORBIDDEN, "Unapproved measurement".to_string()).into_response(),
+            );
         }
 
         // Check REPORT_DATA[0..32] against expected binary hash
@@ -199,14 +200,12 @@ pub async fn reshare_handler(
                 got = %binary_hash,
                 "reshare: binary hash mismatch"
             );
-            return Err((
-                StatusCode::FORBIDDEN,
-                "Binary hash mismatch".to_string(),
-            )
-                .into_response());
+            return Err((StatusCode::FORBIDDEN, "Binary hash mismatch".to_string()).into_response());
         }
     } else {
-        warn!("reshare: no well-known config available — skipping measurement and binary hash checks");
+        warn!(
+            "reshare: no well-known config available — skipping measurement and binary hash checks"
+        );
     }
 
     // Verify VMPL == 0 (must run at the most privileged guest level)

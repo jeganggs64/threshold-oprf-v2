@@ -197,10 +197,8 @@ async fn round2(
     };
 
     // Deserialize round1 packages from other participants
-    let mut round1_packages: BTreeMap<
-        frost::Identifier,
-        frost::keys::dkg::round1::Package,
-    > = BTreeMap::new();
+    let mut round1_packages: BTreeMap<frost::Identifier, frost::keys::dkg::round1::Package> =
+        BTreeMap::new();
 
     for (id_hex, pkg_json) in &req.round1_packages {
         let id_bytes = hex::decode(id_hex).map_err(|e| {
@@ -209,13 +207,12 @@ async fn round2(
                 format!("invalid identifier hex '{id_hex}': {e}"),
             )
         })?;
-        let identifier =
-            frost::Identifier::deserialize(&id_bytes).map_err(|e| {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid FROST identifier '{id_hex}': {e}"),
-                )
-            })?;
+        let identifier = frost::Identifier::deserialize(&id_bytes).map_err(|e| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                format!("invalid FROST identifier '{id_hex}': {e}"),
+            )
+        })?;
         let package: frost::keys::dkg::round1::Package =
             serde_json::from_str(pkg_json).map_err(|e| {
                 error_response(
@@ -283,10 +280,8 @@ async fn round3(
     };
 
     // Deserialize round1 packages
-    let mut round1_packages: BTreeMap<
-        frost::Identifier,
-        frost::keys::dkg::round1::Package,
-    > = BTreeMap::new();
+    let mut round1_packages: BTreeMap<frost::Identifier, frost::keys::dkg::round1::Package> =
+        BTreeMap::new();
 
     for (id_hex, pkg_json) in &req.round1_packages {
         let id_bytes = hex::decode(id_hex).map_err(|e| {
@@ -295,13 +290,12 @@ async fn round3(
                 format!("invalid identifier hex '{id_hex}': {e}"),
             )
         })?;
-        let identifier =
-            frost::Identifier::deserialize(&id_bytes).map_err(|e| {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid FROST identifier '{id_hex}': {e}"),
-                )
-            })?;
+        let identifier = frost::Identifier::deserialize(&id_bytes).map_err(|e| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                format!("invalid FROST identifier '{id_hex}': {e}"),
+            )
+        })?;
         let package: frost::keys::dkg::round1::Package =
             serde_json::from_str(pkg_json).map_err(|e| {
                 error_response(
@@ -313,10 +307,8 @@ async fn round3(
     }
 
     // Deserialize round2 packages
-    let mut round2_packages: BTreeMap<
-        frost::Identifier,
-        frost::keys::dkg::round2::Package,
-    > = BTreeMap::new();
+    let mut round2_packages: BTreeMap<frost::Identifier, frost::keys::dkg::round2::Package> =
+        BTreeMap::new();
 
     for (id_hex, pkg_json) in &req.round2_packages {
         let id_bytes = hex::decode(id_hex).map_err(|e| {
@@ -325,13 +317,12 @@ async fn round3(
                 format!("invalid identifier hex '{id_hex}': {e}"),
             )
         })?;
-        let identifier =
-            frost::Identifier::deserialize(&id_bytes).map_err(|e| {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid FROST identifier '{id_hex}': {e}"),
-                )
-            })?;
+        let identifier = frost::Identifier::deserialize(&id_bytes).map_err(|e| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                format!("invalid FROST identifier '{id_hex}': {e}"),
+            )
+        })?;
         let package: frost::keys::dkg::round2::Package =
             serde_json::from_str(pkg_json).map_err(|e| {
                 error_response(
@@ -411,20 +402,16 @@ async fn round3(
                 continue;
             }
 
-            let contribution = generate_recovery_contribution(
-                my_node_id,
-                &my_scalar,
-                &donor_ids,
-                target_prod_id,
-            )
-            .map_err(|e| {
-                error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
+            let contribution =
+                generate_recovery_contribution(my_node_id, &my_scalar, &donor_ids, target_prod_id)
+                    .map_err(|e| {
+                        error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
                         "generate_recovery_contribution failed for target {target_prod_id}: {e}"
                     ),
-                )
-            })?;
+                        )
+                    })?;
 
             // ECIES encrypt to production node's pubkey
             let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| {
@@ -533,14 +520,10 @@ async fn main() {
                     eprintln!("missing value for --node-id");
                     std::process::exit(1);
                 }
-                node_id = Some(
-                    args[i]
-                        .parse()
-                        .unwrap_or_else(|_| {
-                            eprintln!("--node-id must be a positive integer");
-                            std::process::exit(1);
-                        }),
-                );
+                node_id = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--node-id must be a positive integer");
+                    std::process::exit(1);
+                }));
             }
             "--threshold" => {
                 i += 1;
@@ -548,14 +531,10 @@ async fn main() {
                     eprintln!("missing value for --threshold");
                     std::process::exit(1);
                 }
-                threshold = Some(
-                    args[i]
-                        .parse()
-                        .unwrap_or_else(|_| {
-                            eprintln!("--threshold must be a positive integer");
-                            std::process::exit(1);
-                        }),
-                );
+                threshold = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--threshold must be a positive integer");
+                    std::process::exit(1);
+                }));
             }
             "--total" => {
                 i += 1;
@@ -563,14 +542,10 @@ async fn main() {
                     eprintln!("missing value for --total");
                     std::process::exit(1);
                 }
-                total = Some(
-                    args[i]
-                        .parse()
-                        .unwrap_or_else(|_| {
-                            eprintln!("--total must be a positive integer");
-                            std::process::exit(1);
-                        }),
-                );
+                total = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--total must be a positive integer");
+                    std::process::exit(1);
+                }));
             }
             "--help" | "-h" => {
                 eprintln!("Usage: toprf-dkg-node [OPTIONS]");

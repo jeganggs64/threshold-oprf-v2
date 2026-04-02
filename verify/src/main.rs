@@ -115,23 +115,10 @@ async fn main() {
     let mut r = Results::new();
 
     // ── 1. Fetch manifest ───────────────────────────────────────────
-    println!(
-        "\n{}",
-        "========================================".bold()
-    );
-    println!(
-        "  {} Verifier",
-        "TOPRF".bold()
-    );
-    println!(
-        "{}",
-        "========================================".bold()
-    );
-    println!(
-        "\n{} {}",
-        "Fetching manifest:".bold(),
-        cli.endpoint
-    );
+    println!("\n{}", "========================================".bold());
+    println!("  {} Verifier", "TOPRF".bold());
+    println!("{}", "========================================".bold());
+    println!("\n{} {}", "Fetching manifest:".bold(), cli.endpoint);
 
     let manifest: NodeManifest = match client.get(&cli.endpoint).send().await {
         Ok(res) if res.status().is_success() => match res.json().await {
@@ -170,10 +157,7 @@ async fn main() {
     );
 
     // ── 2. Verification share consistency ───────────────────────────
-    println!(
-        "\n{}",
-        "Verification share consistency:".bold()
-    );
+    println!("\n{}", "Verification share consistency:".bold());
 
     let nodes_with_shares: Vec<&NodeEntry> = manifest
         .nodes
@@ -195,21 +179,19 @@ async fn main() {
                 for node in subset {
                     let vs_hex = node.verification_share.as_ref().unwrap();
                     match hex_to_point(vs_hex) {
-                        Ok(vs_point) => {
-                            match lagrange_coefficient(node.id, &ids) {
-                                Ok(lambda) => {
-                                    interpolated += vs_point * lambda;
-                                }
-                                Err(e) => {
-                                    r.fail(&format!(
-                                        "Lagrange coefficient failed for node {}: {}",
-                                        node.id, e
-                                    ));
-                                    interp_ok = false;
-                                    break;
-                                }
+                        Ok(vs_point) => match lagrange_coefficient(node.id, &ids) {
+                            Ok(lambda) => {
+                                interpolated += vs_point * lambda;
                             }
-                        }
+                            Err(e) => {
+                                r.fail(&format!(
+                                    "Lagrange coefficient failed for node {}: {}",
+                                    node.id, e
+                                ));
+                                interp_ok = false;
+                                break;
+                            }
+                        },
                         Err(e) => {
                             r.fail(&format!(
                                 "Invalid verification share for node {}: {}",
@@ -222,8 +204,7 @@ async fn main() {
                 }
 
                 if interp_ok {
-                    let consistent =
-                        point_to_hex(&interpolated) == point_to_hex(&gpk);
+                    let consistent = point_to_hex(&interpolated) == point_to_hex(&gpk);
                     r.check(
                         "Verification shares interpolate to group public key",
                         consistent,
@@ -243,24 +224,20 @@ async fn main() {
     }
 
     // ── 3. Live node attestation ────────────────────────────────────
-    println!(
-        "\n{}",
-        "Live node attestation:".bold()
-    );
+    println!("\n{}", "Live node attestation:".bold());
 
     for node in &manifest.nodes {
-        println!(
-            "\n  {} ({})",
-            format!("Node {}", node.id).bold(),
-            node.url
-        );
+        println!("\n  {} ({})", format!("Node {}", node.id).bold(), node.url);
 
         // Generate a random 32-byte nonce for challenge-response attestation
         let nonce: [u8; 32] = {
             use std::time::{SystemTime, UNIX_EPOCH};
             let mut buf = [0u8; 32];
             // Simple nonce: timestamp + node id (sufficient for verify tool)
-            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
             buf[0..16].copy_from_slice(&ts.to_le_bytes());
             buf[16..18].copy_from_slice(&node.id.to_le_bytes());
             buf
@@ -293,9 +270,8 @@ async fn main() {
                                 // Check measurement against approved list
                                 let measurement_str =
                                     format!("sha384:{}", hex::encode(measurement));
-                                let m_ok = manifest
-                                    .approved_measurements
-                                    .contains(&measurement_str);
+                                let m_ok =
+                                    manifest.approved_measurements.contains(&measurement_str);
                                 r.check("LAUNCH_DIGEST in approved measurements", m_ok);
 
                                 // Check nonce in REPORT_DATA[32..64]
@@ -349,10 +325,7 @@ async fn main() {
 
     // ── 4. On-chain verification (stub) ─────────────────────────────
     if let (Some(rpc), Some(registry)) = (&cli.rpc, &cli.registry) {
-        println!(
-            "\n{}",
-            "On-chain registry verification:".bold()
-        );
+        println!("\n{}", "On-chain registry verification:".bold());
         r.warn(&format!(
             "On-chain verification not yet implemented (RPC: {}, Registry: {})",
             rpc, registry
@@ -360,18 +333,9 @@ async fn main() {
     }
 
     // ── Summary ─────────────────────────────────────────────────────
-    println!(
-        "\n{}",
-        "========================================".bold()
-    );
-    println!(
-        "  {} Verification Results",
-        "TOPRF".bold()
-    );
-    println!(
-        "{}",
-        "========================================".bold()
-    );
+    println!("\n{}", "========================================".bold());
+    println!("  {} Verification Results", "TOPRF".bold());
+    println!("{}", "========================================".bold());
     println!("  Passed:   {}", format!("{}", r.pass).green());
     if r.fail > 0 {
         println!("  Failed:   {}", format!("{}", r.fail).red());
@@ -379,10 +343,7 @@ async fn main() {
     if r.warn > 0 {
         println!("  Warnings: {}", format!("{}", r.warn).yellow());
     }
-    println!(
-        "{}",
-        "========================================".bold()
-    );
+    println!("{}", "========================================".bold());
 
     if r.fail > 0 {
         println!("\n  {}\n", "RESULT: FAIL".red().bold());
