@@ -78,7 +78,7 @@ impl RateLimiter {
 
         // Periodic eviction: every 1000 calls, remove entries whose epoch has expired.
         let count = self.call_count.fetch_add(1, Ordering::Relaxed);
-        if count % 1000 == 0 {
+        if count.is_multiple_of(1000) {
             let epoch_duration = self.epoch_duration;
             map.retain(|_, record| now.duration_since(record.epoch_start) < epoch_duration);
         }
