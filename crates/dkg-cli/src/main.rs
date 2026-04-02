@@ -2,6 +2,11 @@
 //! and delivers the resulting key shares to production TOPRF nodes using the
 //! reshare/receive endpoint.
 //!
+//! The CLI never sees plaintext key shares. DKG nodes ECIES-encrypt their
+//! contributions directly to each production node's ephemeral X25519 public key.
+//! The CLI acts as a blind relay, routing encrypted blobs to the correct
+//! production nodes.
+//!
 //! Usage:
 //!   toprf-dkg-cli init \
 //!       --dkg-nodes http://localhost:4001,http://localhost:4002,http://localhost:4003 \
@@ -18,9 +23,6 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-
-use toprf_core::reshare::{generate_recovery_contribution, SerializableReshareContribution};
-use toprf_core::{hex_to_scalar, scalar_to_hex, NodeKeyShare};
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -86,11 +88,48 @@ struct Round2Response {
 struct Round3Request {
     round1_packages: BTreeMap<String, String>,
     round2_packages: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    production_pubkeys: Option<BTreeMap<u16, String>>,
 }
 
 // ---------------------------------------------------------------------------
-// Production node reshare/receive types
+// DKG node encrypted round3 response types
 // ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct EncryptedContribution {
+    from_node_id: u16,
+    encrypted_sub_share: String, // base64 ECIES ciphertext
+    verification_share: String,  // hex, public
+}
+
+#[derive(Deserialize)]
+struct Round3EncryptedResponse {
+    node_id: u16,
+    verification_share: String,
+    group_public_key: String,
+    threshold: u16,
+    total_shares: u16,
+    encrypted_contributions: BTreeMap<u16, EncryptedContribution>,
+}
+
+// ---------------------------------------------------------------------------
+// Production node types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct JoinInfoResponse {
+    ephemeral_pubkey: String,
+}
+
+#[derive(Serialize)]
+struct SerializableReshareContribution {
+    from_node_id: u16,
+    new_node_id: u16,
+    sub_share_data: String,
+    encrypted: bool,
+    verification_share: String,
+}
 
 #[derive(Serialize)]
 struct ReshareReceiveRequest {
@@ -166,6 +205,35 @@ async fn run_init(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
+
+    // ------------------------------------------------------------------
+    // Collect production node ephemeral pubkeys for ECIES encryption
+    // ------------------------------------------------------------------
+    println!("[Setup] Collecting ephemeral pubkeys from production nodes...");
+
+    let mut prod_pubkeys: BTreeMap<u16, String> = BTreeMap::new();
+    for (i, url) in production_nodes.iter().enumerate() {
+        let node_id = (i + 1) as u16;
+        let resp = client
+            .get(format!("{url}/join-info"))
+            .send()
+            .await?
+            .error_for_status()
+            .map_err(|e| format!("production node {url} /join-info failed: {e}"))?
+            .json::<JoinInfoResponse>()
+            .await?;
+
+        println!(
+            "  Production node {} ({}): pubkey={}...",
+            node_id,
+            url,
+            &resp.ephemeral_pubkey[..16.min(resp.ephemeral_pubkey.len())]
+        );
+
+        prod_pubkeys.insert(node_id, resp.ephemeral_pubkey);
+    }
+
+    println!("[Setup] Complete.\n");
 
     // ------------------------------------------------------------------
     // Round 1: collect identifiers and round1 packages from each DKG node
@@ -246,10 +314,11 @@ async fn run_init(
 
     // ------------------------------------------------------------------
     // Round 3: for each node, build round1 + round2 maps and finalize
+    //          with production pubkeys for ECIES encryption
     // ------------------------------------------------------------------
-    println!("[Round 3] Calling /dkg/round3 on each DKG node...");
+    println!("[Round 3] Calling /dkg/round3 on each DKG node (ECIES-encrypted mode)...");
 
-    let mut key_shares: Vec<NodeKeyShare> = Vec::with_capacity(n);
+    let mut round3_results: Vec<Round3EncryptedResponse> = Vec::with_capacity(n);
 
     for (i, url) in dkg_nodes.iter().enumerate() {
         // round1_packages: all OTHER nodes' round1 packages (same as round2 input)
@@ -266,9 +335,6 @@ async fn run_init(
 
         // round2_packages: for node i, collect round2 packages FROM each other node j
         // that are addressed TO node i.
-        //
-        // round2_results[j] is a map { recipient_id_hex: pkg_json, ... }
-        // We want the entry keyed by node i's identifier from each other node j.
         let my_identifier = &round1_identifiers[i];
         let mut r2_map = BTreeMap::new();
         for (j, r2_pkgs) in round2_results.iter().enumerate() {
@@ -291,6 +357,7 @@ async fn run_init(
         let req = Round3Request {
             round1_packages: r1_map,
             round2_packages: r2_map,
+            production_pubkeys: Some(prod_pubkeys.clone()),
         };
 
         let resp = client
@@ -299,19 +366,20 @@ async fn run_init(
             .send()
             .await?
             .error_for_status()?
-            .json::<NodeKeyShare>()
+            .json::<Round3EncryptedResponse>()
             .await?;
 
         println!(
-            "  DKG node {} ({}): node_id={}, threshold={}, total={}",
+            "  DKG node {} ({}): node_id={}, threshold={}, total={}, encrypted_contributions={}",
             i + 1,
             url,
             resp.node_id,
             resp.threshold,
-            resp.total_shares
+            resp.total_shares,
+            resp.encrypted_contributions.len()
         );
 
-        key_shares.push(resp);
+        round3_results.push(resp);
     }
 
     println!("[Round 3] Complete.\n");
@@ -319,102 +387,72 @@ async fn run_init(
     // ------------------------------------------------------------------
     // Verify: all shares must agree on group public key
     // ------------------------------------------------------------------
-    let group_public_key = &key_shares[0].group_public_key;
-    let threshold = key_shares[0].threshold;
-    let total_shares = key_shares[0].total_shares;
+    let group_public_key = &round3_results[0].group_public_key;
+    let threshold = round3_results[0].threshold;
+    let total_shares = round3_results[0].total_shares;
 
-    for share in &key_shares[1..] {
-        if &share.group_public_key != group_public_key {
+    for r3 in &round3_results[1..] {
+        if &r3.group_public_key != group_public_key {
             return Err(format!(
                 "Group public key mismatch: node {} has {} but node {} has {}",
-                key_shares[0].node_id,
+                round3_results[0].node_id,
                 group_public_key,
-                share.node_id,
-                share.group_public_key
+                r3.node_id,
+                r3.group_public_key
             )
             .into());
         }
     }
 
-    println!("[Verify] All shares agree on group public key: {group_public_key}");
+    println!("[Verify] All DKG nodes agree on group public key: {group_public_key}");
     println!(
         "[Verify] Threshold: {threshold}, Total shares: {total_shares}\n"
     );
 
     // ------------------------------------------------------------------
-    // Deliver shares to production nodes via /reshare/receive
+    // Deliver encrypted contributions to production nodes via /reshare/receive
     // ------------------------------------------------------------------
-    println!("[Deliver] Sending shares to production nodes...\n");
+    println!("[Deliver] Routing encrypted contributions to production nodes...\n");
 
+    // For each production node, gather encrypted contributions from all DKG nodes
     for (i, prod_url) in production_nodes.iter().enumerate() {
-        let target_share = &key_shares[i];
-        let target_node_id = target_share.node_id;
+        let target_node_id = (i + 1) as u16;
 
-        // Pick `threshold` OTHER DKG shares as donors (exclude the target share)
-        let donors: Vec<&NodeKeyShare> = key_shares
-            .iter()
-            .filter(|s| s.node_id != target_node_id)
-            .take(threshold as usize)
-            .collect();
+        // Collect encrypted contributions from all DKG nodes for this production node
+        let mut contributions: Vec<SerializableReshareContribution> = Vec::new();
+        let mut donor_node_ids: Vec<u16> = Vec::new();
 
-        if donors.len() < threshold as usize {
+        for r3 in &round3_results {
+            if let Some(contrib) = r3.encrypted_contributions.get(&target_node_id) {
+                contributions.push(SerializableReshareContribution {
+                    from_node_id: contrib.from_node_id,
+                    new_node_id: target_node_id,
+                    sub_share_data: contrib.encrypted_sub_share.clone(),
+                    encrypted: true,
+                    verification_share: contrib.verification_share.clone(),
+                });
+                donor_node_ids.push(contrib.from_node_id);
+
+                info!(
+                    from_node_id = contrib.from_node_id,
+                    target_node_id = target_node_id,
+                    "routing encrypted contribution"
+                );
+            }
+        }
+
+        if contributions.is_empty() {
             return Err(format!(
-                "Not enough donors for node {target_node_id}: need {threshold}, have {}",
-                donors.len()
+                "No encrypted contributions found for production node {target_node_id}"
             )
             .into());
         }
-
-        // The participant_ids are the donor node IDs
-        let donor_node_ids: Vec<u16> = donors.iter().map(|d| d.node_id).collect();
 
         println!(
             "  Production node {} ({prod_url}): target_node_id={target_node_id}, donors={:?}",
             i + 1,
             donor_node_ids
         );
-
-        // Generate recovery contributions from each donor
-        let mut contributions: Vec<SerializableReshareContribution> =
-            Vec::with_capacity(donors.len());
-
-        for donor in &donors {
-            let donor_scalar = hex_to_scalar(&donor.secret_share).map_err(|e| {
-                format!(
-                    "failed to parse secret share for donor node {}: {e}",
-                    donor.node_id
-                )
-            })?;
-
-            let contribution = generate_recovery_contribution(
-                donor.node_id,
-                &donor_scalar,
-                &donor_node_ids,
-                target_node_id,
-            )
-            .map_err(|e| {
-                format!(
-                    "generate_recovery_contribution failed for donor {}: {e}",
-                    donor.node_id
-                )
-            })?;
-
-            let contribution_hex = scalar_to_hex(&contribution);
-
-            contributions.push(SerializableReshareContribution {
-                from_node_id: donor.node_id,
-                new_node_id: target_node_id,
-                sub_share_data: contribution_hex,
-                encrypted: false,
-                verification_share: donor.verification_share.clone(),
-            });
-
-            info!(
-                donor_node_id = donor.node_id,
-                target_node_id = target_node_id,
-                "generated recovery contribution"
-            );
-        }
 
         // Send to production node
         let req = ReshareReceiveRequest {
@@ -455,12 +493,13 @@ async fn run_init(
     println!("  Group public key: {group_public_key}");
     println!("  Threshold:        {threshold}");
     println!("  Total shares:     {total_shares}");
+    println!("  Mode:             ECIES-encrypted (CLI never saw plaintext shares)");
     println!();
-    for share in &key_shares {
+    for r3 in &round3_results {
         println!(
             "  Node {}: verification_share={}...",
-            share.node_id,
-            &share.verification_share[..16.min(share.verification_share.len())]
+            r3.node_id,
+            &r3.verification_share[..16.min(r3.verification_share.len())]
         );
     }
     println!();

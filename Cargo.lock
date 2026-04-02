@@ -2366,13 +2366,10 @@ name = "toprf-dkg-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "hex",
- "k256",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
- "toprf-core",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2382,6 +2379,7 @@ name = "toprf-dkg-node"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "frost-secp256k1",
  "hex",
  "k256",
@@ -2392,8 +2390,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toprf-core",
+ "toprf-seal",
  "tracing",
  "tracing-subscriber",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

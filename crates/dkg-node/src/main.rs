@@ -24,12 +24,16 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use frost_secp256k1 as frost;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
+use x25519_dalek::PublicKey;
+use zeroize::Zeroizing;
 
-use toprf_core::NodeKeyShare;
+use toprf_core::reshare::generate_recovery_contribution;
+use toprf_core::{hex_to_scalar, NodeKeyShare};
 
 // -- Application state --
 
@@ -74,6 +78,27 @@ struct Round2Response {
 struct Round3Request {
     round1_packages: BTreeMap<String, String>,
     round2_packages: BTreeMap<String, String>,
+    /// Production node X25519 pubkeys for ECIES encryption (node_id -> hex pubkey).
+    /// When provided, round3 returns encrypted contributions instead of plaintext.
+    #[serde(default)]
+    production_pubkeys: Option<BTreeMap<u16, String>>,
+}
+
+#[derive(Serialize)]
+struct EncryptedContribution {
+    from_node_id: u16,
+    encrypted_sub_share: String, // base64 ECIES ciphertext
+    verification_share: String,  // hex, public
+}
+
+#[derive(Serialize)]
+struct Round3EncryptedResponse {
+    node_id: u16,
+    verification_share: String,
+    group_public_key: String,
+    threshold: u16,
+    total_shares: u16,
+    encrypted_contributions: BTreeMap<u16, EncryptedContribution>,
 }
 
 // -- Error response helper --
@@ -243,7 +268,9 @@ async fn round2(
 async fn round3(
     State(state): State<Arc<DkgState>>,
     Json(req): Json<Round3Request>,
-) -> Result<Json<NodeKeyShare>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    use axum::response::IntoResponse;
+
     // Take the round2 secret (consumed — round3 can only be called once)
     let round2_secret = {
         let mut guard = state.round2_secret.lock().unwrap();
@@ -355,6 +382,109 @@ async fn round3(
         *guard = Some(key_package);
     }
 
+    // If production pubkeys provided, compute encrypted contributions
+    if let Some(ref prod_pubkeys) = req.production_pubkeys {
+        let my_node_id = state.node_id;
+        let my_scalar = hex_to_scalar(&share_hex).map_err(|e| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to parse own share scalar: {e}"),
+            )
+        })?;
+
+        // All DKG node IDs are 1..=max_signers (sequential, as set up by the CLI)
+        let all_dkg_ids: Vec<u16> = (1..=state.max_signers).collect();
+
+        let mut encrypted_contributions: BTreeMap<u16, EncryptedContribution> = BTreeMap::new();
+
+        for (&target_prod_id, pubkey_hex) in prod_pubkeys {
+            // Donors for this production node are all DKG nodes except the one
+            // whose share goes directly to this production node (same ID).
+            let donor_ids: Vec<u16> = all_dkg_ids
+                .iter()
+                .filter(|&&id| id != target_prod_id)
+                .copied()
+                .collect();
+
+            // Only compute if we're one of the donors for this target
+            if !donor_ids.contains(&my_node_id) {
+                continue;
+            }
+
+            let contribution = generate_recovery_contribution(
+                my_node_id,
+                &my_scalar,
+                &donor_ids,
+                target_prod_id,
+            )
+            .map_err(|e| {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "generate_recovery_contribution failed for target {target_prod_id}: {e}"
+                    ),
+                )
+            })?;
+
+            // ECIES encrypt to production node's pubkey
+            let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid production pubkey hex for node {target_prod_id}: {e}"),
+                )
+            })?;
+            if pubkey_bytes.len() != 32 {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "production pubkey for node {target_prod_id} must be 32 bytes, got {}",
+                        pubkey_bytes.len()
+                    ),
+                ));
+            }
+            let mut pk_arr = [0u8; 32];
+            pk_arr.copy_from_slice(&pubkey_bytes);
+            let recipient = PublicKey::from(pk_arr);
+
+            let contrib_bytes = Zeroizing::new(contribution.to_bytes().to_vec());
+            let ciphertext =
+                toprf_seal::ecies::encrypt(&recipient, &contrib_bytes).map_err(|e| {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("ECIES encryption failed for target {target_prod_id}: {e}"),
+                    )
+                })?;
+            let encrypted = base64::engine::general_purpose::STANDARD.encode(&ciphertext);
+
+            encrypted_contributions.insert(
+                target_prod_id,
+                EncryptedContribution {
+                    from_node_id: my_node_id,
+                    encrypted_sub_share: encrypted,
+                    verification_share: vs_hex.clone(),
+                },
+            );
+        }
+
+        info!(
+            node_id = my_node_id,
+            group_public_key = %gk_hex,
+            encrypted_contributions = encrypted_contributions.len(),
+            "round3 complete — encrypted contributions generated"
+        );
+
+        return Ok(Json(Round3EncryptedResponse {
+            node_id: my_node_id,
+            verification_share: vs_hex,
+            group_public_key: gk_hex,
+            threshold: state.min_signers,
+            total_shares: state.max_signers,
+            encrypted_contributions,
+        })
+        .into_response());
+    }
+
+    // Fallback: return plaintext (for testing without ECIES)
     let result = NodeKeyShare {
         node_id: state.node_id,
         secret_share: share_hex,
@@ -367,10 +497,10 @@ async fn round3(
     info!(
         node_id = state.node_id,
         group_public_key = %result.group_public_key,
-        "round3 complete — key share derived"
+        "round3 complete — key share derived (plaintext fallback)"
     );
 
-    Ok(Json(result))
+    Ok(Json(result).into_response())
 }
 
 // -- Main --
