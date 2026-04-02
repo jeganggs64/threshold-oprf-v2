@@ -417,7 +417,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
     // Write dkg-data.json (for contract deployment + deployment records)
     // ------------------------------------------------------------------
     let dkg_data = serde_json::json!({
-        "groupPublicKey": format!("0x{}", &group_public_key[..64.min(group_public_key.len())].chars().chain(std::iter::repeat('0')).take(64).collect::<String>()),
+        "groupPublicKey": format!("0x{group_public_key}"),
         "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
         "threshold": threshold,
         "nodeCount": round3_results.len(),
@@ -427,7 +427,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
                 "dkgCommitment": "0x",
                 "attestationReport": "0x",
                 "certChain": "0x",
-                "verificationShare": format!("0x{}", &r3.verification_share[..64.min(r3.verification_share.len())].chars().chain(std::iter::repeat('0')).take(64).collect::<String>())
+                "verificationShare": format!("0x{}", r3.verification_share)
             })
         }).collect::<Vec<_>>()
     });
