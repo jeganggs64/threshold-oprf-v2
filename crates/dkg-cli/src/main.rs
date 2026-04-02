@@ -180,6 +180,9 @@ struct ReshareReceiveResponse {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    // Load .env file if present (non-fatal if missing)
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {
