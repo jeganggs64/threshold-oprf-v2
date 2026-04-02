@@ -305,21 +305,47 @@ DEOF
     fi
 
     # Step 7: Launch enclave + socat
+    # Write a launch script and run it via nohup so it survives SSH disconnects.
+    # The enclave launch steals CPUs from the parent which can kill SSH sessions.
     local debug_flag=""
     if [[ "$TOPRF_DEBUG" == "true" ]]; then
         debug_flag="--debug-mode"
     fi
 
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
-        sudo nitro-cli run-enclave --eif-path ~/toprf-node.eif \
-            --cpu-count 2 --memory 256 --enclave-cid 16 $debug_flag 2>&1 | grep Started
-        sleep 2
-        nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
-        sleep 12
-        curl -sf http://127.0.0.1:3001/health || echo 'HEALTH CHECK FAILED'
-    " 2>&1
+        cat > ~/launch.sh <<'LEOF'
+#!/bin/bash
+sudo nitro-cli run-enclave --eif-path ~/toprf-node.eif \
+    --cpu-count 2 --memory 256 --enclave-cid 16 $debug_flag > ~/enclave.log 2>&1
+sleep 2
+nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
+sleep 12
+curl -sf http://127.0.0.1:3001/health > ~/health.log 2>&1 || echo 'HEALTH CHECK FAILED' > ~/health.log
+LEOF
+        chmod +x ~/launch.sh
+        nohup ~/launch.sh > ~/launch-output.log 2>&1 &
+        echo 'Launch script started in background'
+    " 2>&1 || true
 
-    echo "[${region}] Node $node_id deployed at $ip"
+    # Wait for the enclave to boot (launch runs in background on the instance)
+    echo "[${region}] Waiting for enclave to boot..."
+    sleep 20
+
+    # Reconnect to check health
+    local health=""
+    for attempt in $(seq 1 6); do
+        health=$(curl -sf --connect-timeout 5 "http://${ip}:3001/health" 2>/dev/null || echo "")
+        if [[ -n "$health" ]]; then
+            break
+        fi
+        sleep 5
+    done
+
+    if [[ -n "$health" ]]; then
+        echo "[${region}] Node $node_id deployed at $ip: $health"
+    else
+        echo "[${region}] Node $node_id at $ip: enclave may still be booting, check manually"
+    fi
 }
 
 echo ""
