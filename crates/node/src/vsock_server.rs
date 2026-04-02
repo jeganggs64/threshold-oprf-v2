@@ -6,7 +6,7 @@
 
 use axum::Router;
 use hyper_util::rt::TokioIo;
-use tokio_vsock::VsockListener;
+use tokio_vsock::{VsockAddr, VsockListener};
 use tower::Service;
 use tracing::{info, warn};
 
@@ -19,8 +19,8 @@ const VSOCK_CID_ANY: u32 = 0xFFFFFFFF;
 /// This function loops forever, accepting connections and spawning a
 /// task for each one. It never returns under normal operation.
 pub async fn serve(app: Router, port: u16) -> ! {
-    let listener =
-        VsockListener::bind(VSOCK_CID_ANY, port as u32).expect("failed to bind vsock listener");
+    let addr = VsockAddr::new(VSOCK_CID_ANY, port as u32);
+    let mut listener = VsockListener::bind(addr).expect("failed to bind vsock listener");
     info!(
         port = port,
         cid = VSOCK_CID_ANY,
