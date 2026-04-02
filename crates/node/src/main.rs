@@ -156,7 +156,6 @@ async fn main() {
     let mut tls_key: Option<String> = None;
     let mut client_ca: Option<String> = None;
     let mut key_file: Option<String> = None;
-    let mut well_known_url: Option<String> = None;
     let mut data_dir: Option<String> = None;
     let mut join_mode = false;
     let mut tcp_mode = false;
@@ -207,14 +206,6 @@ async fn main() {
                     std::process::exit(1);
                 }
                 key_file = Some(args[i].clone());
-            }
-            "--well-known-url" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --well-known-url");
-                    std::process::exit(1);
-                }
-                well_known_url = Some(args[i].clone());
             }
             "--data-dir" => {
                 i += 1;
@@ -277,7 +268,6 @@ async fn main() {
                 eprintln!("Options:");
                 eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
                 eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
-                eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
                 eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
                 eprintln!("      --tcp                   Use TCP listener instead of vsock (default on non-Linux; for dev/test)");
                 eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
@@ -308,10 +298,11 @@ async fn main() {
         i += 1;
     }
 
-    // -- Fetch well-known config (non-fatal if unavailable) --
-    let well_known_config = if let Some(ref url) = well_known_url {
-        info!(url = %url, "fetching well-known config");
-        match config::fetch_well_known(url).await {
+    // -- Fetch well-known config --
+    const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
+    let well_known_config = {
+        info!(url = WELL_KNOWN_URL, "fetching well-known config");
+        match config::fetch_well_known(WELL_KNOWN_URL).await {
             Ok(cfg) => {
                 info!(
                     version = cfg.version,
@@ -322,13 +313,10 @@ async fn main() {
                 Some(cfg)
             }
             Err(e) => {
-                warn!(url = %url, error = %e, "failed to fetch well-known config — continuing without it");
+                warn!(url = WELL_KNOWN_URL, error = %e, "failed to fetch well-known config — continuing without it");
                 None
             }
         }
-    } else {
-        info!("no --well-known-url provided, skipping well-known config fetch");
-        None
     };
 
     // Compute sha256 of own binary at boot (for attestation identity hash)

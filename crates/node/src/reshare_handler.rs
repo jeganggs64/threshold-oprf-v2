@@ -120,15 +120,20 @@ pub async fn reshare_handler(
     let mut pubkey_arr = [0u8; 32];
     pubkey_arr.copy_from_slice(&pubkey_bytes);
 
-    // 6. Look up the target node in the well-known config to determine platform
-    let wk_config = state.well_known_config.as_ref().ok_or_else(|| {
-        warn!("reshare: no well-known config — cannot verify target attestation");
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no well-known config available — cannot verify target node".to_string(),
-        )
-            .into_response()
-    })?;
+    // 6. Fetch fresh well-known config to look up the target node's platform.
+    //    Fetched on each reshare request (not cached) because the new node's
+    //    entry is added to well-known AFTER existing nodes are already running.
+    const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
+    let wk_config = crate::config::fetch_well_known(WELL_KNOWN_URL)
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "reshare: failed to fetch well-known config");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("failed to fetch well-known config: {e}"),
+            )
+                .into_response()
+        })?;
 
     let target_entry = wk_config
         .nodes
