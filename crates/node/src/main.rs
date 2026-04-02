@@ -1,27 +1,21 @@
-//! TOPRF node server — stateless TEE that evaluates partial OPRF requests.
+//! TOPRF node server — sealed TEE that evaluates partial OPRF requests.
 //!
 //! Every node is identical: it holds one key share and serves partial
 //! evaluations. The client collects threshold-many partial evaluations and
 //! performs Lagrange combination locally.
 //!
-//! Key loading (at boot, never at runtime):
-//!
-//! **Key file** (testing/dev) — `--key-file <PATH>` loads a NodeKeyShare
-//! JSON file from disk at boot.
-//!
-//! In all modes, the key exists only in memory after loading.
+//! Key loading: keys are generated during DKG (--genesis mode) or received
+//! via resharing (--join mode). Keys exist only in enclave memory.
 //!
 //! Endpoints:
 //!   GET  /health           — liveness + key status
 //!   POST /partial-evaluate — partial OPRF evaluation
 //!   POST /reshare          — reshare donor (generates and returns sub-share)
+//!   GET  /attestation      — TEE attestation (feature-gated: nitro or snp)
 //!
 //! Usage:
-//!   toprf-node --port 3001 --key-file /path/to/share.json
-//!
-//! Environment variables:
-//!   PORT                        — HTTP listen port (default: 3001)
-//!   EXPECTED_VERIFICATION_SHARE — hex-encoded k_i * G for key verification
+//!   toprf-node --genesis "http://peer1:3001,http://peer2:3001" --node-id 1 --threshold 2 --total 3
+//!   toprf-node --join --port 3001
 
 mod attestation;
 pub mod config;
@@ -52,8 +46,6 @@ use zeroize::Zeroize;
 
 #[cfg(target_os = "linux")]
 mod vsock_server;
-
-use toprf_core::{hex_to_point, hex_to_scalar, NodeKeyShare};
 
 // -- Application state --
 
@@ -155,7 +147,6 @@ async fn main() {
     let mut tls_cert: Option<String> = None;
     let mut tls_key: Option<String> = None;
     let mut client_ca: Option<String> = None;
-    let mut key_file: Option<String> = None;
     let mut data_dir: Option<String> = None;
     let mut join_mode = false;
     let mut tcp_mode = false;
@@ -198,14 +189,6 @@ async fn main() {
                     std::process::exit(1);
                 }
                 client_ca = Some(args[i].clone());
-            }
-            "--key-file" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --key-file");
-                    std::process::exit(1);
-                }
-                key_file = Some(args[i].clone());
             }
             "--data-dir" => {
                 i += 1;
@@ -267,7 +250,6 @@ async fn main() {
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
-                eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
                 eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
                 eprintln!("      --tcp                   Use TCP listener instead of vsock (default on non-Linux; for dev/test)");
                 eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
@@ -282,8 +264,6 @@ async fn main() {
                 eprintln!();
                 eprintln!("Environment:");
                 eprintln!("  PORT                        Listen port (default: 3001)");
-                eprintln!("  EXPECTED_VERIFICATION_SHARE Hex-encoded k_i * G for key verification");
-                eprintln!("  (attestation uses /dev/sev-guest ioctl automatically)");
                 eprintln!();
                 eprintln!("When --tls-cert and --tls-key are provided, the node serves HTTPS.");
                 eprintln!("When --client-ca is also provided, clients must present a certificate");
@@ -402,64 +382,6 @@ async fn main() {
         join_keypair,
         dkg_state,
     });
-
-    // -- Load key from file (testing/dev) --
-    if let Some(ref path) = key_file {
-        info!("loading key share from file: {path}");
-        let share_bytes =
-            std::fs::read(path).unwrap_or_else(|e| panic!("failed to read key file {path}: {e}"));
-        let share: NodeKeyShare = serde_json::from_slice(&share_bytes)
-            .unwrap_or_else(|e| panic!("invalid NodeKeyShare JSON in {path}: {e}"));
-
-        if share.node_id == 0 {
-            panic!("key file: node_id must be nonzero");
-        }
-
-        let key_share = hex_to_scalar(&share.secret_share)
-            .unwrap_or_else(|e| panic!("key file: invalid secret_share: {e}"));
-
-        // Verify k_i * G == verification_share
-        let expected_point = hex_to_point(&share.verification_share)
-            .unwrap_or_else(|e| panic!("key file: invalid verification_share: {e}"));
-        let computed_point = {
-            use k256::elliptic_curve::ops::MulByGenerator;
-            use k256::ProjectivePoint;
-            ProjectivePoint::mul_by_generator(&key_share)
-        };
-        if expected_point != computed_point {
-            panic!("key file: key share does not match verification share");
-        }
-
-        // Optionally check against EXPECTED_VERIFICATION_SHARE env var
-        if let Ok(expected_vs) = env::var("EXPECTED_VERIFICATION_SHARE") {
-            if share.verification_share != expected_vs {
-                panic!(
-                    "key file: verification share mismatch\n  loaded:   {}\n  expected: {}",
-                    share.verification_share, expected_vs
-                );
-            }
-        }
-
-        let loaded = LoadedKey {
-            node_id: share.node_id,
-            key_share,
-            verification_share: share.verification_share.clone(),
-            group_public_key: share.group_public_key.clone(),
-            threshold: share.threshold,
-            total_shares: share.total_shares,
-        };
-
-        state
-            .loaded_key
-            .set(loaded)
-            .expect("key file: OnceLock already set");
-        info!(
-            node_id = share.node_id,
-            threshold = share.threshold,
-            total_shares = share.total_shares,
-            "key share loaded from file"
-        );
-    }
 
     if genesis_mode {
         info!("starting in genesis mode — DKG endpoints active, waiting for ceremony");

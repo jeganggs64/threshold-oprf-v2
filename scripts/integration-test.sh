@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Integration test for threshold-OPRF system (simplified node architecture).
+# Integration test for threshold-OPRF system.
 #
-# Builds the workspace, generates keys, starts 3 identical nodes (no coordinator),
-# and runs end-to-end HTTP tests via /partial-evaluate (per-node evaluation mode).
+# Builds the workspace, starts 3 nodes in genesis mode, runs DKG,
+# and tests /health, /partial-evaluate, rate limiting, and /attestation.
 #
 set -euo pipefail
 
@@ -14,8 +14,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 
 # Binary paths (built in step 1)
-KEYGEN="$REPO_ROOT/target/release/toprf-keygen"
 NODE="$REPO_ROOT/target/release/toprf-node"
+DKG_CLI="$REPO_ROOT/target/release/toprf-dkg-cli"
 
 NODE1_PORT=7101
 NODE2_PORT=7102
@@ -27,9 +27,7 @@ FAIL=0
 
 # ---------- sha256 helper ----------
 
-# Use shasum on macOS, sha256sum on Linux.
 sha256_hex() {
-    # Reads from stdin, outputs a 64-char hex digest.
     if command -v shasum > /dev/null 2>&1; then
         shasum -a 256 | cut -d' ' -f1
     else
@@ -37,8 +35,6 @@ sha256_hex() {
     fi
 }
 
-# Compute sha256 of the raw bytes represented by a hex string.
-# Usage: hex_bytes_sha256 <hex_string>
 hex_bytes_sha256() {
     printf '%s' "$1" | xxd -r -p | sha256_hex
 }
@@ -105,81 +101,59 @@ cd "$REPO_ROOT"
 cargo build --release 2>&1 | tail -5
 echo "  Build complete."
 
-# Verify binaries exist
-for bin in "$KEYGEN" "$NODE"; do
+for bin in "$NODE" "$DKG_CLI"; do
     if [[ ! -x "$bin" ]]; then
         echo "  FATAL: binary not found: $bin"
         exit 1
     fi
 done
 
-# ---------- 2. Generate keys ----------
+# ---------- 2. Start 3 nodes in genesis mode ----------
 
 echo ""
-echo "=== Step 2: Generating keys (2-of-3 threshold) ==="
+echo "=== Step 2: Starting 3 nodes in genesis mode ==="
 
-ADMIN_DIR="$TMPDIR/admin-shares"
-NODE_SHARES_DIR="$TMPDIR/node-shares"
+mkdir -p "$TMPDIR/node1" "$TMPDIR/node2" "$TMPDIR/node3"
 
-"$KEYGEN" init \
-    --admin-threshold 3 --admin-shares 5 \
-    --output-dir "$ADMIN_DIR" 2>&1
-
-"$KEYGEN" node-shares \
-    --admin-share "$ADMIN_DIR/admin-1.json" \
-    --admin-share "$ADMIN_DIR/admin-2.json" \
-    --admin-share "$ADMIN_DIR/admin-3.json" \
-    --node-threshold 2 --node-shares 3 \
-    --output-dir "$NODE_SHARES_DIR" 2>&1
-
-echo "  Key generation complete."
-
-# Parse the public config
-PUBLIC_CONFIG="$NODE_SHARES_DIR/public-config.json"
-if [[ ! -f "$PUBLIC_CONFIG" ]]; then
-    echo "  FATAL: public-config.json not found at $PUBLIC_CONFIG"
-    exit 1
-fi
-
-GROUP_PUBLIC_KEY=$(jq -r '.group_public_key' "$PUBLIC_CONFIG")
-THRESHOLD=$(jq -r '.threshold' "$PUBLIC_CONFIG")
-TOTAL_SHARES=$(jq -r '.total_shares' "$PUBLIC_CONFIG")
-
-echo "  Group public key: $GROUP_PUBLIC_KEY"
-echo "  Threshold: $THRESHOLD, Total shares: $TOTAL_SHARES"
-
-# ---------- 3. Start 3 node servers ----------
-
-echo ""
-echo "=== Step 3: Starting 3 node servers (no coordinator) ==="
-
-for i in 1 2 3; do
-    SHARE_FILE="$NODE_SHARES_DIR/node-${i}-share.json"
-    if [[ ! -f "$SHARE_FILE" ]]; then
-        echo "  FATAL: share file not found: $SHARE_FILE"
-        exit 1
-    fi
-done
-
-"$NODE" --tcp --port $NODE1_PORT --key-file "$NODE_SHARES_DIR/node-1-share.json" \
+"$NODE" --tcp \
+    --genesis "http://127.0.0.1:$NODE2_PORT,http://127.0.0.1:$NODE3_PORT" \
+    --node-id 1 --threshold 2 --total 3 \
+    --port $NODE1_PORT --data-dir "$TMPDIR/node1" \
     > "$TMPDIR/node1.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 1 started (PID $!, port $NODE1_PORT)"
 
-"$NODE" --tcp --port $NODE2_PORT --key-file "$NODE_SHARES_DIR/node-2-share.json" \
+"$NODE" --tcp \
+    --genesis "http://127.0.0.1:$NODE1_PORT,http://127.0.0.1:$NODE3_PORT" \
+    --node-id 2 --threshold 2 --total 3 \
+    --port $NODE2_PORT --data-dir "$TMPDIR/node2" \
     > "$TMPDIR/node2.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 2 started (PID $!, port $NODE2_PORT)"
 
-"$NODE" --tcp --port $NODE3_PORT --key-file "$NODE_SHARES_DIR/node-3-share.json" \
+"$NODE" --tcp \
+    --genesis "http://127.0.0.1:$NODE1_PORT,http://127.0.0.1:$NODE2_PORT" \
+    --node-id 3 --threshold 2 --total 3 \
+    --port $NODE3_PORT --data-dir "$TMPDIR/node3" \
     > "$TMPDIR/node3.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 3 started (PID $!, port $NODE3_PORT)"
 
-# Wait for all nodes to be healthy and ready
 wait_for_health "http://127.0.0.1:$NODE1_PORT/health" "Node 1"
 wait_for_health "http://127.0.0.1:$NODE2_PORT/health" "Node 2"
 wait_for_health "http://127.0.0.1:$NODE3_PORT/health" "Node 3"
+
+# ---------- 3. Run DKG ----------
+
+echo ""
+echo "=== Step 3: Running DKG ceremony ==="
+
+"$DKG_CLI" init --nodes \
+    "http://127.0.0.1:$NODE1_PORT,http://127.0.0.1:$NODE2_PORT,http://127.0.0.1:$NODE3_PORT" \
+    > "$TMPDIR/dkg.log" 2>&1
+
+GROUP_PUBLIC_KEY=$(grep "Group public key:" "$TMPDIR/dkg.log" | awk '{print $NF}')
+echo "  DKG complete. Group public key: $GROUP_PUBLIC_KEY"
 
 # ---------- 4. Test health ----------
 
@@ -196,7 +170,6 @@ for i in 1 2 3; do
     NODE_ID_FIELD=$(printf '%s' "$HEALTH_RESP" | jq -r '.node_id')
     assert_eq "node $i health node_id is $i" "$i" "$NODE_ID_FIELD"
 
-    # Confirm no 'coordinator' field
     HAS_COORD=$(printf '%s' "$HEALTH_RESP" | jq 'has("coordinator")')
     assert_eq "node $i health has no 'coordinator' field" "false" "$HAS_COORD"
 done
@@ -206,10 +179,7 @@ done
 echo ""
 echo "=== Step 5: Testing /partial-evaluate on each node ==="
 
-# secp256k1 generator point (compressed)
 BLINDED_POINT_1="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-
-# Compute client_data_hash = sha256(raw bytes of the blinded point)
 CDH_1=$(hex_bytes_sha256 "$BLINDED_POINT_1")
 echo "  Blinded point 1: $BLINDED_POINT_1"
 echo "  client_data_hash 1: $CDH_1"
@@ -236,21 +206,17 @@ for i in 1 2 3; do
     if [[ -f "$TMPDIR/pe_resp_${i}.json" && "$PE_HTTP_CODE" == "200" ]]; then
         PE_RESP=$(cat "$TMPDIR/pe_resp_${i}.json")
 
-        # node_id
         PE_NODE_ID=$(printf '%s' "$PE_RESP" | jq -r '.node_id')
         assert_eq "node $i response node_id is $i" "$i" "$PE_NODE_ID"
 
-        # partial_point: valid compressed secp256k1 point (02 or 03 prefix + 64 hex chars)
         PARTIAL_POINT=$(printf '%s' "$PE_RESP" | jq -r '.partial_point')
         assert_match "node $i partial_point is valid compressed point" \
             '^(02|03)[0-9a-f]{64}$' "$PARTIAL_POINT"
 
-        # dleq_proof.challenge: 64 hex chars
         CHALLENGE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.challenge')
         assert_match "node $i dleq_proof.challenge is 64 hex" \
             '^[0-9a-f]{64}$' "$CHALLENGE"
 
-        # dleq_proof.response: 64 hex chars
         RESPONSE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.response')
         assert_match "node $i dleq_proof.response is 64 hex" \
             '^[0-9a-f]{64}$' "$RESPONSE"
@@ -264,11 +230,6 @@ done
 
 echo ""
 echo "=== Step 6: Testing rate limiting ==="
-
-# The rate limiter allows 5 requests per device per day.
-# In test mode, device_id_hash == client_data_hash.
-# We already consumed 1 request on node 1 in step 5.
-# Send 4 more to exhaust the limit, then the 6th should return 429.
 
 echo "  Exhausting rate limit on node 1 (4 more requests, 5 total allowed)..."
 for _n in 1 2 3 4; do
@@ -286,20 +247,16 @@ RATE_HTTP_CODE=$(curl -s -o "$TMPDIR/rate_resp.json" -w "%{http_code}" \
 
 assert_eq "6th same-device request to node 1 returns 429" "429" "$RATE_HTTP_CODE"
 
-# ---------- 7. Test that different nodes produce valid partial evaluations ----------
+# ---------- 7. Test different blinded point ----------
 
 echo ""
 echo "=== Step 7: Testing partial evaluations from different nodes ==="
 
-# Use a second blinded point to avoid triggering the rate limit hit in step 5 on nodes 2 and 3.
-# secp256k1 point: 2*G (known compressed form)
 BLINDED_POINT_2="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 CDH_2=$(hex_bytes_sha256 "$BLINDED_POINT_2")
 echo "  Blinded point 2: $BLINDED_POINT_2"
 echo "  client_data_hash 2: $CDH_2"
 
-# Each node has its own independent in-process rate limiter.
-# Node 2 and node 3 have not yet seen CDH_2, so both should return 200.
 PE2_CODE=$(curl -s -o "$TMPDIR/pe2_resp.json" -w "%{http_code}" \
     -X POST "http://127.0.0.1:$NODE2_PORT/partial-evaluate" \
     -H "Content-Type: application/json" \
