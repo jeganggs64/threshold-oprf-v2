@@ -328,11 +328,12 @@ fi
 echo ""
 echo "=== Step 8: Testing /attestation endpoint ==="
 
-# Challenge-response attestation: send a nonce, expect 503 (non-TEE)
+# Attestation endpoint is only available with --features nitro or snp.
+# In dev/test builds (no feature flag), the route is not registered -> 404.
 TEST_NONCE=$(head -c 32 /dev/urandom | xxd -p -c 64)
 ATT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     "http://127.0.0.1:$NODE1_PORT/attestation?nonce=$TEST_NONCE")
-assert_eq "GET /attestation?nonce=... returns 503 (no TEE hardware)" "503" "$ATT_CODE"
+assert_eq "GET /attestation?nonce=... returns 404 (no TEE feature enabled)" "404" "$ATT_CODE"
 
 # ---------- 9. Summary ----------
 
