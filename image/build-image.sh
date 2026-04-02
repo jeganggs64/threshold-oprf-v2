@@ -48,34 +48,45 @@ trap cleanup EXIT
 echo "=== Building sealed TOPRF node image ==="
 echo ""
 
-# ---- 1. Download signed boot components ----
-echo "[1/7] Downloading signed boot components..."
-apt-get update -qq
+# ---- 1. Download pinned boot components ----
+echo "[1/7] Downloading pinned boot components..."
 
-# Download packages (don't install to host — just extract)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOCKFILE="$SCRIPT_DIR/package-lock.json"
+
 PKG_DIR="$WORKDIR/packages"
 mkdir -p "$PKG_DIR"
-cd "$PKG_DIR"
 
-# Resolve the actual kernel package (linux-image-azure is a meta-package)
-KERNEL_PKG=$(apt-cache depends linux-image-azure 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-azure" | awk '{print $2}' | head -1)
-if [[ -z "$KERNEL_PKG" ]]; then
-    # Fallback: use the generic kernel
-    KERNEL_PKG=$(apt-cache depends linux-image-generic 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-generic" | awk '{print $2}' | head -1)
+if [[ -f "$LOCKFILE" ]] && ! grep -q "UPDATE_ME" "$LOCKFILE"; then
+    echo "  Using pinned versions from package-lock.json (reproducible build)"
+    # Download each package from pinned URL and verify SHA256
+    for pkg in shim-signed grub-efi-amd64-signed linux-image linux-modules busybox-static ca-certificates; do
+        URL=$(python3 -c "import json; d=json.load(open('$LOCKFILE')); print(d['packages']['$pkg']['url'])")
+        EXPECTED_HASH=$(python3 -c "import json; d=json.load(open('$LOCKFILE')); print(d['packages']['$pkg']['sha256'])")
+        FILENAME="$PKG_DIR/$(basename "$URL")"
+        echo "  Downloading $pkg..."
+        curl -sfL -o "$FILENAME" "$URL"
+        ACTUAL_HASH=$(sha256sum "$FILENAME" | cut -d' ' -f1)
+        if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
+            echo "  ERROR: SHA256 mismatch for $pkg!"
+            echo "    Expected: $EXPECTED_HASH"
+            echo "    Got:      $ACTUAL_HASH"
+            exit 1
+        fi
+        echo "  ✓ $pkg (hash verified)"
+    done
+else
+    echo "  WARNING: No package-lock.json or hashes not set — using apt-get (NOT reproducible)"
+    echo "  Run 'bash image/update-lock.sh' on Ubuntu to generate pinned versions"
+    apt-get update -qq
+    cd "$PKG_DIR"
+    KERNEL_PKG=$(apt-cache depends linux-image-azure 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-azure" | awk '{print $2}' | head -1)
+    if [[ -z "$KERNEL_PKG" ]]; then
+        KERNEL_PKG=$(apt-cache depends linux-image-generic 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-generic" | awk '{print $2}' | head -1)
+    fi
+    MODULES_PKG=$(echo "$KERNEL_PKG" | sed 's/linux-image-/linux-modules-/')
+    apt-get download shim-signed grub-efi-amd64-signed "$KERNEL_PKG" "$MODULES_PKG" busybox-static ca-certificates 2>/dev/null || true
 fi
-# Also resolve the modules package
-MODULES_PKG=$(echo "$KERNEL_PKG" | sed 's/linux-image-/linux-modules-/')
-echo "  Kernel package:  $KERNEL_PKG"
-echo "  Modules package: $MODULES_PKG"
-
-# Download the signed boot chain + resolved kernel + modules
-apt-get download \
-    shim-signed \
-    grub-efi-amd64-signed \
-    "$KERNEL_PKG" \
-    "$MODULES_PKG" \
-    busybox-static \
-    ca-certificates 2>/dev/null || true
 
 # Extract all packages
 EXTRACT="$WORKDIR/extract"

@@ -1,0 +1,53 @@
+name: Build Nitro Enclave Image (EIF)
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: Build Docker Image + EIF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node
+
+      - name: Build Docker image
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/toprf-node image/nitro/toprf-node
+          docker build -t toprf-node-enclave -f image/nitro/Dockerfile image/nitro/
+
+      - name: Install nitro-cli
+        run: |
+          sudo amazon-linux-extras install aws-nitro-enclaves-cli 2>/dev/null || \
+          sudo apt-get install -y aws-nitro-enclaves-cli 2>/dev/null || \
+          echo "nitro-cli not available — saving Docker image instead"
+
+      - name: Build EIF or save Docker image
+        run: |
+          mkdir -p artifacts
+          if command -v nitro-cli &>/dev/null; then
+            nitro-cli build-enclave \
+              --docker-uri toprf-node-enclave:latest \
+              --output-file artifacts/toprf-node.eif
+            echo "EIF built successfully"
+          else
+            docker save toprf-node-enclave:latest | gzip > artifacts/toprf-node-enclave.tar.gz
+            echo "Docker image saved (nitro-cli not available in CI — build EIF locally with nitro-cli)"
+          fi
+          sha256sum artifacts/* | tee artifacts/hashes.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nitro-enclave-image
+          path: artifacts/
