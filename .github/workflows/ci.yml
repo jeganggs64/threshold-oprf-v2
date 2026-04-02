@@ -55,8 +55,8 @@ jobs:
       - name: Build sealed VHD
         run: |
           sudo bash image/build-image.sh \
-            --binary target/x86_64-unknown-linux-musl/release/toprf-node \
-            --output toprf-node-sealed.vhd
+            --binary ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/toprf-node \
+            --output ${{ github.workspace }}/toprf-node-sealed.vhd
 
       - name: Collect artifacts
         run: |
