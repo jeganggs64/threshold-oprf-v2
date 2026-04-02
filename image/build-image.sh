@@ -63,15 +63,19 @@ if [[ -z "$KERNEL_PKG" ]]; then
     # Fallback: use the generic kernel
     KERNEL_PKG=$(apt-cache depends linux-image-generic 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-generic" | awk '{print $2}' | head -1)
 fi
-echo "  Kernel package: $KERNEL_PKG"
+# Also resolve the modules package
+MODULES_PKG=$(echo "$KERNEL_PKG" | sed 's/linux-image-/linux-modules-/')
+echo "  Kernel package:  $KERNEL_PKG"
+echo "  Modules package: $MODULES_PKG"
 
-# Download the signed boot chain + resolved kernel
+# Download the signed boot chain + resolved kernel + modules
 apt-get download \
     shim-signed \
     grub-efi-amd64-signed \
     "$KERNEL_PKG" \
+    "$MODULES_PKG" \
     busybox-static \
-    ca-certificates 2>/dev/null
+    ca-certificates 2>/dev/null || true
 
 # Extract all packages
 EXTRACT="$WORKDIR/extract"
@@ -87,9 +91,9 @@ GRUBX64=$(find "$EXTRACT" -name "grubx64.efi.signed" -o -name "grubnetx64.efi.si
 if [[ -z "$GRUBX64" ]]; then
     GRUBX64=$(find "$EXTRACT" -path "*/grub-efi-amd64-signed/*grubx64*" | head -1)
 fi
-VMLINUZ=$(find "$EXTRACT/boot" -name "vmlinuz-*" | head -1)
-MODULES_DIR=$(find "$EXTRACT/lib/modules" -maxdepth 1 -mindepth 1 -type d | head -1)
-BUSYBOX=$(find "$EXTRACT" -name "busybox" -path "*/bin/*" | head -1)
+VMLINUZ=$(find "$EXTRACT" -name "vmlinuz-*" 2>/dev/null | head -1)
+MODULES_DIR=$(find "$EXTRACT" -path "*/lib/modules/*" -maxdepth 4 -mindepth 4 -type d 2>/dev/null | head -1)
+BUSYBOX=$(find "$EXTRACT" -name "busybox" -path "*/bin/*" 2>/dev/null | head -1)
 CA_CERTS="$EXTRACT/etc/ssl/certs"
 
 echo "  shim:    $SHIMX64"
