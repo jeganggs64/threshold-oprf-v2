@@ -11,6 +11,8 @@ jobs:
   build:
     name: Build Docker Image + EIF
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -42,7 +44,12 @@ jobs:
 
       - name: Record build environment for reproducibility
         run: |
-          cat > artifacts/build-info.json <<EOF
+          COMMIT_SHORT=$(echo "${{ github.sha }}" | cut -c1-8)
+          BINARY_HASH=$(sha256sum target/x86_64-unknown-linux-musl/release/toprf-node | cut -d' ' -f1)
+          CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)
+          DOCKER_IMAGE_HASH=$(sha256sum artifacts/toprf-node-enclave.tar.gz 2>/dev/null | cut -d' ' -f1 || echo "n/a")
+
+          cat > artifacts/build-info.json <<BEOF
           {
             "commit": "${{ github.sha }}",
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -50,16 +57,35 @@ jobs:
             "rust_commit": "$(rustc -vV | grep 'commit-hash' | awk '{print $2}')",
             "cargo_version": "$(cargo --version)",
             "alpine_digest": "$(grep 'FROM alpine' image/nitro/Dockerfile | grep -o 'sha256:[a-f0-9]*')",
-            "os": "$(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+            "os": "$(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')",
+            "binary_sha256": "${BINARY_HASH}",
+            "cargo_lock_sha256": "${CARGO_LOCK_HASH}",
+            "docker_image_sha256": "${DOCKER_IMAGE_HASH}"
           }
-          EOF
+          BEOF
           cat artifacts/build-info.json
+
+          # Save to deployments/ with commit in filename
+          mkdir -p deployments/builds
+          cp artifacts/build-info.json "deployments/builds/nitro-${COMMIT_SHORT}.json"
 
       - name: Collect artifacts
         run: |
           cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
           sha256sum artifacts/toprf-node artifacts/toprf-node-enclave.tar.gz 2>/dev/null | tee artifacts/hashes.txt
           sha256sum artifacts/toprf-node.eif 2>/dev/null >> artifacts/hashes.txt || true
+
+      - name: Commit build record
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments/builds/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "ci: record nitro build $(echo ${{ github.sha }} | cut -c1-8)"
+            git push
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
