@@ -34,8 +34,9 @@ the attestation endpoint is not registered.
 ### Prerequisites
 
 - AWS CLI configured with credentials
-- SSH key pair created in each target region
 - GitHub CLI (`gh`) for downloading artifacts
+- A wallet with Base Sepolia ETH (for on-chain registry deployment)
+  - Get testnet ETH from a faucet (e.g. https://www.alchemy.com/faucets/base-sepolia)
 
 ### 1. Build the image (CI)
 
@@ -58,8 +59,7 @@ chmod +x /tmp/cli-binaries/*
 ```bash
 cp scripts/deploy-nodes.env.example scripts/deploy-nodes.env
 # Edit deploy-nodes.env:
-#   TOPRF_REGIONS, TOPRF_KEY_NAME, TOPRF_SSH_KEY,
-#   TOPRF_IMAGE_DIR, TOPRF_CLI_DIR, TOPRF_MODE
+#   TOPRF_REGIONS, TOPRF_KEY_NAME, TOPRF_IMAGE_DIR, TOPRF_CLI_DIR
 
 bash scripts/deploy-nodes.sh
 ```
@@ -80,17 +80,19 @@ cp scripts/run-dkg.env.example scripts/run-dkg.env
 # Edit run-dkg.env:
 #   TOPRF_NODE_URLS (from deploy output)
 #   TOPRF_DKG_HOST (from deploy output)
-#   TOPRF_SSH_KEY
-#   DEPLOYER_PRIVATE_KEY (optional, for on-chain registry)
+#   TOPRF_KEY_NAME (must match deploy-nodes.env)
+#   DEPLOYER_PRIVATE_KEY (wallet private key for on-chain registry)
+#   RPC_URL (defaults to Base Sepolia)
 
 bash scripts/run-dkg.sh
 ```
 
 The script:
 - Verifies all nodes are healthy
-- Uploads .env credentials to the DKG host
-- Installs foundry and uploads contracts (if deploying on-chain)
-- Runs the DKG CLI
+- Uploads deployer credentials to the DKG host
+- Uploads contracts and installs foundry (for on-chain deployment)
+- Runs the DKG ceremony (FROST rounds 1-3)
+- Deploys the TOPRFRegistry contract to Base (if DEPLOYER_PRIVATE_KEY is set)
 - Downloads `dkg-data.json` locally
 - Verifies all nodes are ready after DKG
 
