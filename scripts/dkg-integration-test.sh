@@ -166,7 +166,7 @@ echo "=== Step 2: Starting 3 production nodes with --genesis ==="
 mkdir -p "$TMPDIR/node1" "$TMPDIR/node2" "$TMPDIR/node3"
 
 # Node 1: peers are node 2 and node 3
-"$NODE" \
+"$NODE" --tcp \
     --genesis "http://127.0.0.1:$PORT2,http://127.0.0.1:$PORT3" \
     --node-id 1 --threshold 2 --total 3 \
     --port "$PORT1" --data-dir "$TMPDIR/node1" \
@@ -175,7 +175,7 @@ PIDS+=($!)
 echo "  Node 1 started (PID $!, port $PORT1)"
 
 # Node 2: peers are node 1 and node 3
-"$NODE" \
+"$NODE" --tcp \
     --genesis "http://127.0.0.1:$PORT1,http://127.0.0.1:$PORT3" \
     --node-id 2 --threshold 2 --total 3 \
     --port "$PORT2" --data-dir "$TMPDIR/node2" \
@@ -184,7 +184,7 @@ PIDS+=($!)
 echo "  Node 2 started (PID $!, port $PORT2)"
 
 # Node 3: peers are node 1 and node 2
-"$NODE" \
+"$NODE" --tcp \
     --genesis "http://127.0.0.1:$PORT1,http://127.0.0.1:$PORT2" \
     --node-id 3 --threshold 2 --total 3 \
     --port "$PORT3" --data-dir "$TMPDIR/node3" \

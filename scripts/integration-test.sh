@@ -161,17 +161,17 @@ for i in 1 2 3; do
     fi
 done
 
-"$NODE" --port $NODE1_PORT --key-file "$NODE_SHARES_DIR/node-1-share.json" \
+"$NODE" --tcp --port $NODE1_PORT --key-file "$NODE_SHARES_DIR/node-1-share.json" \
     > "$TMPDIR/node1.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 1 started (PID $!, port $NODE1_PORT)"
 
-"$NODE" --port $NODE2_PORT --key-file "$NODE_SHARES_DIR/node-2-share.json" \
+"$NODE" --tcp --port $NODE2_PORT --key-file "$NODE_SHARES_DIR/node-2-share.json" \
     > "$TMPDIR/node2.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 2 started (PID $!, port $NODE2_PORT)"
 
-"$NODE" --port $NODE3_PORT --key-file "$NODE_SHARES_DIR/node-3-share.json" \
+"$NODE" --tcp --port $NODE3_PORT --key-file "$NODE_SHARES_DIR/node-3-share.json" \
     > "$TMPDIR/node3.log" 2>&1 &
 PIDS+=($!)
 echo "  Node 3 started (PID $!, port $NODE3_PORT)"

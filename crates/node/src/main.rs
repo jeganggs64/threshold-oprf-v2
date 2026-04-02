@@ -46,6 +46,9 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use zeroize::Zeroize;
 
+#[cfg(target_os = "linux")]
+mod vsock_server;
+
 use toprf_core::{hex_to_point, hex_to_scalar, NodeKeyShare};
 
 // -- Application state --
@@ -152,6 +155,7 @@ async fn main() {
     let mut well_known_url: Option<String> = None;
     let mut data_dir: Option<String> = None;
     let mut join_mode = false;
+    let mut tcp_mode = false;
     let mut genesis_peers: Option<String> = None;
     let mut genesis_node_id: Option<u16> = None;
     let mut genesis_threshold: Option<u16> = None;
@@ -260,6 +264,9 @@ async fn main() {
             "--join" => {
                 join_mode = true;
             }
+            "--tcp" => {
+                tcp_mode = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: toprf-node [OPTIONS]");
                 eprintln!();
@@ -268,6 +275,7 @@ async fn main() {
                 eprintln!("      --key-file <PATH>       Load key share from JSON file at boot");
                 eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
                 eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
+                eprintln!("      --tcp                   Use TCP listener instead of vsock (default on non-Linux; for dev/test)");
                 eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
                 eprintln!("      --genesis <PEERS>       Start in genesis mode: run FROST DKG with comma-separated peer URLs");
                 eprintln!("      --node-id <ID>          This node's ID (required for --genesis)");
@@ -490,7 +498,17 @@ async fn main() {
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
         .with_state(state);
 
+    let port_num: u16 = port.parse().unwrap_or_else(|_| {
+        eprintln!("invalid port number: {port}");
+        std::process::exit(1);
+    });
+    // port_num is used by vsock_server on Linux; suppress warning on other platforms
+    let _ = port_num;
     let bind_addr = format!("0.0.0.0:{port}");
+
+    // If --tcp flag is set, OR if not on Linux, use TCP.
+    // Otherwise, use vsock (Nitro Enclave default).
+    let use_tcp = tcp_mode || !cfg!(target_os = "linux");
 
     // Determine whether to serve plain HTTP or HTTPS (with optional mTLS)
     match (tls_cert, tls_key) {
@@ -577,8 +595,8 @@ async fn main() {
                 .await
                 .unwrap_or_else(|e| error!("server error: {e}"));
         }
-        (None, None) => {
-            // -- Plain HTTP mode (local dev) --
+        (None, None) if use_tcp => {
+            // -- Plain HTTP/TCP mode (local dev / --tcp flag) --
             warn!(addr = %bind_addr, "starting WITHOUT TLS on 0.0.0.0:{port} — not recommended for production");
 
             let listener = TcpListener::bind(&bind_addr)
@@ -588,6 +606,15 @@ async fn main() {
             axum::serve(listener, app)
                 .await
                 .unwrap_or_else(|e| error!("server error: {e}"));
+        }
+        #[cfg(target_os = "linux")]
+        (None, None) => {
+            // -- vsock mode (Nitro Enclave default on Linux) --
+            vsock_server::serve(app, port_num).await;
+        }
+        #[cfg(not(target_os = "linux"))]
+        (None, None) => {
+            unreachable!("use_tcp is always true on non-Linux");
         }
         _ => {
             eprintln!("Error: --tls-cert and --tls-key must both be provided (or neither)");
