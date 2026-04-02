@@ -75,51 +75,40 @@ ENVEOF
 echo "  .env uploaded"
 
 # Upload contracts if deploying on-chain
+TOPRF_CONTRACTS_TAR="${TOPRF_CONTRACTS_TAR:-}"
+
 if [[ -n "$DEPLOYER_PRIVATE_KEY" ]]; then
     echo ""
     echo "=== Setting up contract deployment ==="
 
-    # Check if contracts.tar.gz exists locally
-    CONTRACTS_TAR=""
-    if [[ -f "$REPO_ROOT/contracts.tar.gz" ]]; then
-        CONTRACTS_TAR="$REPO_ROOT/contracts.tar.gz"
+    if [[ -z "$TOPRF_CONTRACTS_TAR" || ! -f "$TOPRF_CONTRACTS_TAR" ]]; then
+        echo "  Error: TOPRF_CONTRACTS_TAR not set or file not found: $TOPRF_CONTRACTS_TAR"
+        echo "  Download it from CI: gh run download <ci-run-id> --name contracts -D /tmp/contracts"
+        exit 1
     fi
 
-    # Try to find it in CLI dir from deploy env
-    DEPLOY_ENV="${SCRIPT_DIR}/deploy-nodes.env"
-    if [[ -z "$CONTRACTS_TAR" && -f "$DEPLOY_ENV" ]]; then
-        source "$DEPLOY_ENV"
-        if [[ -n "${TOPRF_CLI_DIR:-}" && -f "${TOPRF_CLI_DIR}/../contracts/contracts.tar.gz" ]]; then
-            CONTRACTS_TAR="${TOPRF_CLI_DIR}/../contracts/contracts.tar.gz"
+    echo "  Uploading contracts..."
+    scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
+        "$TOPRF_CONTRACTS_TAR" ec2-user@"$TOPRF_DKG_HOST":~
+
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
+        mkdir -p ~/contracts
+        tar xzf ~/contracts.tar.gz -C ~/contracts
+    "
+    echo "  Contracts uploaded"
+
+    # Install foundry if not present
+    echo "  Checking foundry..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
+        if ! command -v forge &>/dev/null; then
+            echo '  Installing foundry...'
+            curl -sL https://foundry.paradigm.xyz | bash 2>&1 | tail -1
+            source ~/.bashrc
+            ~/.foundry/bin/foundryup 2>&1 | tail -1
+        else
+            echo '  Foundry already installed'
         fi
-    fi
-
-    if [[ -n "$CONTRACTS_TAR" ]]; then
-        echo "  Uploading contracts..."
-        scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
-            "$CONTRACTS_TAR" ec2-user@"$TOPRF_DKG_HOST":~
-
-        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
-            mkdir -p ~/contracts
-            tar xzf ~/contracts.tar.gz -C ~/contracts
-        "
-        echo "  Contracts uploaded"
-
-        # Install foundry if not present
-        echo "  Checking foundry..."
-        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$TOPRF_DKG_HOST" "
-            if ! command -v forge &>/dev/null; then
-                echo '  Installing foundry...'
-                curl -sL https://foundry.paradigm.xyz | bash 2>&1 | tail -1
-                source ~/.bashrc
-                ~/.foundry/bin/foundryup 2>&1 | tail -1
-            else
-                echo '  Foundry already installed'
-            fi
-        " 2>&1
-    else
-        echo "  WARNING: contracts.tar.gz not found — contract deployment may be skipped"
-    fi
+    " 2>&1
 fi
 
 # Run DKG
