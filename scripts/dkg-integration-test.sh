@@ -2,15 +2,16 @@
 #
 # End-to-end DKG integration test.
 #
-# Tests the complete DKG ceremony flow:
+# Tests the complete DKG ceremony flow with merged genesis mode:
 #   1. Build workspace
-#   2. Start 3 DKG nodes + 3 production nodes (join mode)
-#   3. Wait for all 6 nodes to be healthy
-#   4. Run toprf-dkg-cli init to orchestrate the DKG and deliver shares
-#   5. Wait for production nodes to show "ready" (key loaded)
-#   6. Test /partial-evaluate on all 3 production nodes
+#   2. Start 3 production nodes with --genesis flag (they serve both DKG and
+#      evaluation endpoints)
+#   3. Wait for all 3 to be healthy (status: waiting_for_key)
+#   4. Run toprf-dkg-cli init --nodes <3 URLs> (new unified flag)
+#   5. Wait for nodes to show "ready" (DKG completed, key sealed)
+#   6. Test /partial-evaluate on all 3 nodes
 #   7. Verify partial points and DLEQ proofs
-#   8. Kill DKG nodes and confirm production nodes still work independently
+#   8. Test with a second blinded point (nodes still work after DKG)
 #   9. Print pass/fail summary
 #
 set -euo pipefail
@@ -22,31 +23,25 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 
 # Binary paths (built in step 1)
-DKG_NODE="$REPO_ROOT/target/release/toprf-dkg-node"
 DKG_CLI="$REPO_ROOT/target/release/toprf-dkg-cli"
 NODE="$REPO_ROOT/target/release/toprf-node"
 
 # Port allocation
-DKG_PORT_1=4001
-DKG_PORT_2=4002
-DKG_PORT_3=4003
-
-PROD_PORT_1=3001
-PROD_PORT_2=3002
-PROD_PORT_3=3003
+PORT1=3001
+PORT2=3002
+PORT3=3003
 
 PIDS=()
-DKG_PIDS=()
 PASS=0
 FAIL=0
 
 # ---------- sha256 helper ----------
 
 sha256_hex() {
-    if command -v shasum > /dev/null 2>&1; then
-        shasum -a 256 | cut -d' ' -f1
-    else
+    if command -v sha256sum > /dev/null 2>&1; then
         sha256sum | cut -d' ' -f1
+    else
+        shasum -a 256 | cut -d' ' -f1
     fi
 }
 
@@ -59,20 +54,16 @@ hex_bytes_sha256() {
 cleanup() {
     echo ""
     echo "=== Cleaning up ==="
-    for pid in "${DKG_PIDS[@]+"${DKG_PIDS[@]}"}"; do
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-        fi
-    done
     for pid in "${PIDS[@]+"${PIDS[@]}"}"; do
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
         fi
     done
-    # Clean up node-key.json written by reshare/receive handler
-    rm -f "$REPO_ROOT/node-key.json"
+    # Clean up node-key.json files written to data dirs
+    rm -f "$TMPDIR/node1/node-key.json"
+    rm -f "$TMPDIR/node2/node-key.json"
+    rm -f "$TMPDIR/node3/node-key.json"
     rm -rf "$TMPDIR"
     echo "Temp dir removed: $TMPDIR"
 }
@@ -140,8 +131,7 @@ wait_for_ready() {
 # ---------- pre-flight: ensure ports are free ----------
 
 echo "=== Pre-flight: Checking ports are free ==="
-ALL_PORTS="$DKG_PORT_1 $DKG_PORT_2 $DKG_PORT_3 $PROD_PORT_1 $PROD_PORT_2 $PROD_PORT_3"
-for p in $ALL_PORTS; do
+for p in $PORT1 $PORT2 $PORT3; do
     if lsof -i ":$p" > /dev/null 2>&1; then
         echo "  FATAL: port $p is already in use. Kill the process and retry."
         lsof -i ":$p" 2>/dev/null
@@ -149,9 +139,6 @@ for p in $ALL_PORTS; do
     fi
 done
 echo "  All ports are free."
-
-# Clean up any leftover node-key.json from prior runs
-rm -f "$REPO_ROOT/node-key.json"
 
 # ---------- 1. Build workspace ----------
 
@@ -162,7 +149,7 @@ cargo build --release 2>&1 | tail -5
 echo "  Build complete."
 
 # Verify binaries exist
-for bin in "$DKG_NODE" "$DKG_CLI" "$NODE"; do
+for bin in "$DKG_CLI" "$NODE"; do
     if [[ ! -x "$bin" ]]; then
         echo "  FATAL: binary not found: $bin"
         exit 1
@@ -170,57 +157,59 @@ for bin in "$DKG_NODE" "$DKG_CLI" "$NODE"; do
 done
 echo "  All binaries found."
 
-# ---------- 2. Start 3 DKG nodes + 3 production nodes ----------
+# ---------- 2. Start 3 production nodes with --genesis ----------
 
 echo ""
-echo "=== Step 2: Starting 3 DKG nodes + 3 production nodes ==="
+echo "=== Step 2: Starting 3 production nodes with --genesis ==="
 
-# Start DKG nodes
-for i in 1 2 3; do
-    port_var="DKG_PORT_${i}"
-    port="${!port_var}"
-    "$DKG_NODE" --node-id "$i" --threshold 2 --total 3 --port "$port" \
-        > "$TMPDIR/dkg-node-${i}.log" 2>&1 &
-    DKG_PIDS+=($!)
-    echo "  DKG node $i started (PID $!, port $port)"
-done
+# Create per-node data directories
+mkdir -p "$TMPDIR/node1" "$TMPDIR/node2" "$TMPDIR/node3"
 
-# Start production nodes in --join mode (no key file)
-for i in 1 2 3; do
-    port_var="PROD_PORT_${i}"
-    port="${!port_var}"
-    "$NODE" --port "$port" --join \
-        > "$TMPDIR/prod-node-${i}.log" 2>&1 &
-    PIDS+=($!)
-    echo "  Production node $i started (PID $!, port $port, join mode)"
-done
+# Node 1: peers are node 2 and node 3
+"$NODE" \
+    --genesis "http://127.0.0.1:$PORT2,http://127.0.0.1:$PORT3" \
+    --node-id 1 --threshold 2 --total 3 \
+    --port "$PORT1" --data-dir "$TMPDIR/node1" \
+    > "$TMPDIR/node1.log" 2>&1 &
+PIDS+=($!)
+echo "  Node 1 started (PID $!, port $PORT1)"
 
-# ---------- 3. Wait for all 6 nodes to be healthy ----------
+# Node 2: peers are node 1 and node 3
+"$NODE" \
+    --genesis "http://127.0.0.1:$PORT1,http://127.0.0.1:$PORT3" \
+    --node-id 2 --threshold 2 --total 3 \
+    --port "$PORT2" --data-dir "$TMPDIR/node2" \
+    > "$TMPDIR/node2.log" 2>&1 &
+PIDS+=($!)
+echo "  Node 2 started (PID $!, port $PORT2)"
+
+# Node 3: peers are node 1 and node 2
+"$NODE" \
+    --genesis "http://127.0.0.1:$PORT1,http://127.0.0.1:$PORT2" \
+    --node-id 3 --threshold 2 --total 3 \
+    --port "$PORT3" --data-dir "$TMPDIR/node3" \
+    > "$TMPDIR/node3.log" 2>&1 &
+PIDS+=($!)
+echo "  Node 3 started (PID $!, port $PORT3)"
+
+# ---------- 3. Wait for all 3 nodes to be healthy ----------
 
 echo ""
-echo "=== Step 3: Waiting for all 6 nodes to be healthy ==="
+echo "=== Step 3: Waiting for all 3 nodes to be healthy ==="
 
-for i in 1 2 3; do
-    port_var="DKG_PORT_${i}"
-    port="${!port_var}"
-    wait_for_health "http://127.0.0.1:$port/health" "DKG node $i"
-done
+wait_for_health "http://127.0.0.1:$PORT1/health" "Node 1"
+wait_for_health "http://127.0.0.1:$PORT2/health" "Node 2"
+wait_for_health "http://127.0.0.1:$PORT3/health" "Node 3"
 
-for i in 1 2 3; do
-    port_var="PROD_PORT_${i}"
-    port="${!port_var}"
-    wait_for_health "http://127.0.0.1:$port/health" "Production node $i"
-done
-
-# Verify production nodes are in waiting_for_key state
+# Verify nodes are in waiting_for_key state
 echo ""
-echo "--- Verifying production nodes are in waiting_for_key state ---"
+echo "--- Verifying nodes are in waiting_for_key state ---"
 for i in 1 2 3; do
-    port_var="PROD_PORT_${i}"
+    port_var="PORT${i}"
     port="${!port_var}"
     HEALTH_RESP=$(curl -sf "http://127.0.0.1:$port/health")
     HEALTH_STATUS=$(printf '%s' "$HEALTH_RESP" | jq -r '.status')
-    assert_eq "production node $i starts with status 'waiting_for_key'" "waiting_for_key" "$HEALTH_STATUS"
+    assert_eq "node $i starts with status 'waiting_for_key'" "waiting_for_key" "$HEALTH_STATUS"
 done
 
 # ---------- 4. Run DKG CLI init ----------
@@ -228,12 +217,10 @@ done
 echo ""
 echo "=== Step 4: Running toprf-dkg-cli init ==="
 
-DKG_URLS="http://127.0.0.1:$DKG_PORT_1,http://127.0.0.1:$DKG_PORT_2,http://127.0.0.1:$DKG_PORT_3"
-PROD_URLS="http://127.0.0.1:$PROD_PORT_1,http://127.0.0.1:$PROD_PORT_2,http://127.0.0.1:$PROD_PORT_3"
+NODE_URLS="http://127.0.0.1:$PORT1,http://127.0.0.1:$PORT2,http://127.0.0.1:$PORT3"
 
 "$DKG_CLI" init \
-    --dkg-nodes "$DKG_URLS" \
-    --production-nodes "$PROD_URLS" \
+    --nodes "$NODE_URLS" \
     > "$TMPDIR/dkg-cli.log" 2>&1
 
 DKG_CLI_EXIT=$?
@@ -251,35 +238,33 @@ fi
 echo "  DKG CLI output (last 10 lines):"
 tail -10 "$TMPDIR/dkg-cli.log" | sed 's/^/    /'
 
-# ---------- 5. Wait for production nodes to show "ready" ----------
+# ---------- 5. Wait for nodes to show "ready" ----------
 
 echo ""
-echo "=== Step 5: Waiting for production nodes to be ready (key loaded) ==="
+echo "=== Step 5: Waiting for nodes to be ready (key sealed) ==="
 
-for i in 1 2 3; do
-    port_var="PROD_PORT_${i}"
-    port="${!port_var}"
-    wait_for_ready "http://127.0.0.1:$port/health" "Production node $i"
-done
+wait_for_ready "http://127.0.0.1:$PORT1/health" "Node 1"
+wait_for_ready "http://127.0.0.1:$PORT2/health" "Node 2"
+wait_for_ready "http://127.0.0.1:$PORT3/health" "Node 3"
 
 # Verify health status
 echo ""
-echo "--- Verifying production nodes are now ready ---"
+echo "--- Verifying nodes are now ready ---"
 for i in 1 2 3; do
-    port_var="PROD_PORT_${i}"
+    port_var="PORT${i}"
     port="${!port_var}"
     HEALTH_RESP=$(curl -sf "http://127.0.0.1:$port/health")
     HEALTH_STATUS=$(printf '%s' "$HEALTH_RESP" | jq -r '.status')
-    assert_eq "production node $i health status is 'ready'" "ready" "$HEALTH_STATUS"
+    assert_eq "node $i health status is 'ready'" "ready" "$HEALTH_STATUS"
 
     NODE_ID_FIELD=$(printf '%s' "$HEALTH_RESP" | jq -r '.node_id')
-    assert_eq "production node $i health node_id is $i" "$i" "$NODE_ID_FIELD"
+    assert_eq "node $i health node_id is $i" "$i" "$NODE_ID_FIELD"
 done
 
-# ---------- 6. Test /partial-evaluate on all 3 production nodes ----------
+# ---------- 6. Test /partial-evaluate on all 3 nodes ----------
 
 echo ""
-echo "=== Step 6: Testing /partial-evaluate on each production node ==="
+echo "=== Step 6: Testing /partial-evaluate on each node ==="
 
 # secp256k1 generator point (compressed)
 BLINDED_POINT="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
@@ -289,8 +274,8 @@ echo "  client_data_hash: $CDH"
 
 for i in 1 2 3; do
     echo ""
-    echo "--- Test 6.$i: POST /partial-evaluate on production node $i ---"
-    port_var="PROD_PORT_${i}"
+    echo "--- Test 6.$i: POST /partial-evaluate on node $i ---"
+    port_var="PORT${i}"
     port="${!port_var}"
 
     PE_HTTP_CODE=$(curl -s -o "$TMPDIR/pe_resp_${i}.json" -w "%{http_code}" \
@@ -299,36 +284,36 @@ for i in 1 2 3; do
         -d "{\"blinded_point\": \"$BLINDED_POINT\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH\"}}")
 
     if [[ "$PE_HTTP_CODE" != "200" ]]; then
-        echo "  DEBUG: /partial-evaluate on production node $i returned HTTP $PE_HTTP_CODE"
+        echo "  DEBUG: /partial-evaluate on node $i returned HTTP $PE_HTTP_CODE"
         echo "  DEBUG: response body: $(cat "$TMPDIR/pe_resp_${i}.json" 2>/dev/null)"
-        echo "  DEBUG: production node $i log (last 20 lines):"
-        tail -20 "$TMPDIR/prod-node-${i}.log" 2>/dev/null || echo "(no log)"
+        echo "  DEBUG: node $i log (last 20 lines):"
+        tail -20 "$TMPDIR/node${i}.log" 2>/dev/null || echo "(no log)"
     fi
-    assert_eq "production node $i /partial-evaluate returns 200" "200" "$PE_HTTP_CODE"
+    assert_eq "node $i /partial-evaluate returns 200" "200" "$PE_HTTP_CODE"
 
     if [[ -f "$TMPDIR/pe_resp_${i}.json" && "$PE_HTTP_CODE" == "200" ]]; then
         PE_RESP=$(cat "$TMPDIR/pe_resp_${i}.json")
 
         # node_id
         PE_NODE_ID=$(printf '%s' "$PE_RESP" | jq -r '.node_id')
-        assert_eq "production node $i response node_id is $i" "$i" "$PE_NODE_ID"
+        assert_eq "node $i response node_id is $i" "$i" "$PE_NODE_ID"
 
         # partial_point: valid compressed secp256k1 point (02 or 03 prefix + 64 hex chars)
         PARTIAL_POINT=$(printf '%s' "$PE_RESP" | jq -r '.partial_point')
-        assert_match "production node $i partial_point is valid compressed point" \
+        assert_match "node $i partial_point is valid compressed point" \
             '^(02|03)[0-9a-f]{64}$' "$PARTIAL_POINT"
 
         # dleq_proof.challenge: 64 hex chars
         CHALLENGE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.challenge')
-        assert_match "production node $i dleq_proof.challenge is 64 hex" \
+        assert_match "node $i dleq_proof.challenge is 64 hex" \
             '^[0-9a-f]{64}$' "$CHALLENGE"
 
         # dleq_proof.response: 64 hex chars
         RESPONSE=$(printf '%s' "$PE_RESP" | jq -r '.dleq_proof.response')
-        assert_match "production node $i dleq_proof.response is 64 hex" \
+        assert_match "node $i dleq_proof.response is 64 hex" \
             '^[0-9a-f]{64}$' "$RESPONSE"
     else
-        echo "  FAIL: no valid response from production node $i /partial-evaluate"
+        echo "  FAIL: no valid response from node $i /partial-evaluate"
         FAIL=$((FAIL + 1))
     fi
 done
@@ -371,24 +356,10 @@ else
     echo "  SKIP: cannot verify distinctness, not all partial eval responses available"
 fi
 
-# ---------- 8. Kill DKG nodes ----------
+# ---------- 8. Test with a second blinded point ----------
 
 echo ""
-echo "=== Step 8: Killing DKG nodes (ceremony complete) ==="
-
-for pid in "${DKG_PIDS[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    fi
-done
-DKG_PIDS=()
-echo "  All DKG nodes stopped."
-
-# ---------- 9. Verify production nodes still work after DKG nodes are gone ----------
-
-echo ""
-echo "=== Step 9: Testing production nodes still work after DKG shutdown ==="
+echo "=== Step 8: Testing nodes still work with a second blinded point ==="
 
 # Use a different blinded point to avoid rate limit issues
 BLINDED_POINT_2="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
@@ -398,8 +369,8 @@ echo "  client_data_hash 2: $CDH_2"
 
 for i in 1 2 3; do
     echo ""
-    echo "--- Test 9.$i: POST /partial-evaluate on production node $i (DKG nodes gone) ---"
-    port_var="PROD_PORT_${i}"
+    echo "--- Test 8.$i: POST /partial-evaluate on node $i (second blinded point) ---"
+    port_var="PORT${i}"
     port="${!port_var}"
 
     PE2_HTTP_CODE=$(curl -s -o "$TMPDIR/pe2_resp_${i}.json" -w "%{http_code}" \
@@ -407,18 +378,18 @@ for i in 1 2 3; do
         -H "Content-Type: application/json" \
         -d "{\"blinded_point\": \"$BLINDED_POINT_2\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH_2\"}}")
 
-    assert_eq "production node $i still works after DKG shutdown (HTTP 200)" "200" "$PE2_HTTP_CODE"
+    assert_eq "node $i still works with second blinded point (HTTP 200)" "200" "$PE2_HTTP_CODE"
 
     if [[ "$PE2_HTTP_CODE" == "200" ]]; then
         PE2_RESP=$(cat "$TMPDIR/pe2_resp_${i}.json")
 
         PP=$(printf '%s' "$PE2_RESP" | jq -r '.partial_point')
-        assert_match "production node $i partial_point (post-DKG) is valid compressed point" \
+        assert_match "node $i partial_point (second point) is valid compressed point" \
             '^(02|03)[0-9a-f]{64}$' "$PP"
     fi
 done
 
-# ---------- 10. Summary ----------
+# ---------- 9. Summary ----------
 
 echo ""
 echo "========================================"
@@ -435,13 +406,8 @@ if [[ $FAIL -gt 0 ]]; then
     cat "$TMPDIR/dkg-cli.log" 2>/dev/null || echo "(no log)"
     echo ""
     for i in 1 2 3; do
-        echo "--- DKG node $i log (last 10 lines) ---"
-        tail -10 "$TMPDIR/dkg-node-${i}.log" 2>/dev/null || echo "(no log)"
-    done
-    echo ""
-    for i in 1 2 3; do
-        echo "--- Production node $i log (last 10 lines) ---"
-        tail -10 "$TMPDIR/prod-node-${i}.log" 2>/dev/null || echo "(no log)"
+        echo "--- Node $i log (last 10 lines) ---"
+        tail -10 "$TMPDIR/node${i}.log" 2>/dev/null || echo "(no log)"
     done
     exit 1
 else
