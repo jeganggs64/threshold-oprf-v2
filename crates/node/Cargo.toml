@@ -3,6 +3,10 @@ name = "toprf-node"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+nitro = []
+snp = []
+
 [dependencies]
 toprf-core = { path = "../core" }
 toprf-seal = { path = "../seal" }
@@ -29,6 +33,11 @@ thiserror = { workspace = true }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower = "0.5"
+ciborium = { workspace = true }
+p384 = { workspace = true }
+x509-parser = { workspace = true }
+pem = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.6"
+libc = "0.2"

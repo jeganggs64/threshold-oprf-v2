@@ -28,8 +28,12 @@ pub mod config;
 mod dkg;
 mod evaluate;
 mod join;
+#[cfg(feature = "nitro")]
+mod nitro_endpoint;
+mod nitro_verify;
 mod rate_limit;
 mod reshare_handler;
+#[cfg(feature = "snp")]
 mod snp_endpoint;
 
 use std::env;
@@ -478,13 +482,25 @@ async fn main() {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/join-info", get(join::join_info_handler))
-        .route("/attestation", get(snp_endpoint::attestation_handler))
         .route(
             "/partial-evaluate",
             post(evaluate::partial_evaluate_handler),
         )
         .route("/reshare", post(reshare_handler::reshare_handler))
         .route("/reshare/receive", post(join::reshare_receive_handler));
+
+    // Platform-specific attestation endpoint — one per image
+    #[cfg(feature = "nitro")]
+    {
+        app = app.route(
+            "/attestation",
+            get(nitro_endpoint::nitro_attestation_handler),
+        );
+    }
+    #[cfg(feature = "snp")]
+    {
+        app = app.route("/attestation", get(snp_endpoint::attestation_handler));
+    }
 
     // Register DKG routes when in genesis mode
     if genesis_mode {
