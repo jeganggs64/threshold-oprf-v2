@@ -25,6 +25,7 @@
 
 mod attestation;
 pub mod config;
+mod dkg;
 mod evaluate;
 mod join;
 mod rate_limit;
@@ -74,6 +75,10 @@ pub struct NodeState {
     /// Ephemeral X25519 keypair for ECIES decryption in join mode.
     /// Generated at boot when --join is specified.
     pub join_keypair: Option<(x25519_dalek::StaticSecret, x25519_dalek::PublicKey)>,
+    /// DKG state for genesis mode. `Some` only when the node was started
+    /// with `--genesis`. After round3 completes and the key is sealed,
+    /// the DKG endpoints return 403.
+    pub dkg_state: Option<Arc<dkg::DkgState>>,
 }
 
 #[allow(dead_code)]
@@ -147,6 +152,10 @@ async fn main() {
     let mut well_known_url: Option<String> = None;
     let mut data_dir: Option<String> = None;
     let mut join_mode = false;
+    let mut genesis_peers: Option<String> = None;
+    let mut genesis_node_id: Option<u16> = None;
+    let mut genesis_threshold: Option<u16> = None;
+    let mut genesis_total: Option<u16> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -207,6 +216,47 @@ async fn main() {
                 }
                 data_dir = Some(args[i].clone());
             }
+            "--genesis" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --genesis (comma-separated peer URLs)");
+                    std::process::exit(1);
+                }
+                genesis_peers = Some(args[i].clone());
+            }
+            "--node-id" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --node-id");
+                    std::process::exit(1);
+                }
+                genesis_node_id = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--node-id must be a positive integer");
+                    std::process::exit(1);
+                }));
+            }
+            "--threshold" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --threshold");
+                    std::process::exit(1);
+                }
+                genesis_threshold = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--threshold must be a positive integer");
+                    std::process::exit(1);
+                }));
+            }
+            "--total" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("missing value for --total");
+                    std::process::exit(1);
+                }
+                genesis_total = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("--total must be a positive integer");
+                    std::process::exit(1);
+                }));
+            }
             "--join" => {
                 join_mode = true;
             }
@@ -219,6 +269,10 @@ async fn main() {
                 eprintln!("      --well-known-url <URL>  Fetch operational config from well-known endpoint at boot");
                 eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
                 eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
+                eprintln!("      --genesis <PEERS>       Start in genesis mode: run FROST DKG with comma-separated peer URLs");
+                eprintln!("      --node-id <ID>          This node's ID (required for --genesis)");
+                eprintln!("      --threshold <T>         Minimum signers threshold (required for --genesis)");
+                eprintln!("      --total <N>             Total number of signers (required for --genesis)");
                 eprintln!("      --tls-cert <PATH>       TLS server certificate (PEM)");
                 eprintln!("      --tls-key <PATH>        TLS server private key (PEM)");
                 eprintln!("      --client-ca <PATH>      CA cert for client auth (enables mTLS)");
@@ -279,8 +333,53 @@ async fn main() {
         warn!("could not compute binary hash (non-fatal)");
     }
 
+    // -- Genesis mode setup --
+    let genesis_mode = genesis_peers.is_some();
+    let dkg_state = if genesis_mode {
+        let node_id = genesis_node_id.unwrap_or_else(|| {
+            eprintln!("--node-id is required when --genesis is specified");
+            std::process::exit(1);
+        });
+        let threshold = genesis_threshold.unwrap_or_else(|| {
+            eprintln!("--threshold is required when --genesis is specified");
+            std::process::exit(1);
+        });
+        let total = genesis_total.unwrap_or_else(|| {
+            eprintln!("--total is required when --genesis is specified");
+            std::process::exit(1);
+        });
+
+        if node_id == 0 {
+            eprintln!("--node-id must be >= 1");
+            std::process::exit(1);
+        }
+        if threshold < 2 {
+            eprintln!("--threshold must be >= 2");
+            std::process::exit(1);
+        }
+        if total < threshold {
+            eprintln!("--total must be >= --threshold");
+            std::process::exit(1);
+        }
+
+        info!(
+            node_id = node_id,
+            threshold = threshold,
+            total = total,
+            "starting in genesis mode — FROST DKG endpoints active"
+        );
+
+        Some(Arc::new(dkg::DkgState::new(node_id, threshold, total)))
+    } else {
+        None
+    };
+
+    // Genesis mode implies join behavior (no key loaded), so generate
+    // an ephemeral keypair for /join-info compatibility.
+    let effective_join_mode = join_mode || genesis_mode;
+
     // Generate ephemeral X25519 keypair in join mode for ECIES decryption
-    let join_keypair = if join_mode {
+    let join_keypair = if effective_join_mode {
         let (secret, pubkey_bytes) = toprf_seal::ecies::generate_keypair();
         let pubkey = x25519_dalek::PublicKey::from(pubkey_bytes);
         info!(
@@ -301,6 +400,7 @@ async fn main() {
         data_dir,
         join_in_progress: std::sync::Mutex::new(()),
         join_keypair,
+        dkg_state,
     });
 
     // -- Load key from file (testing/dev) --
@@ -361,11 +461,13 @@ async fn main() {
         );
     }
 
-    if join_mode {
+    if genesis_mode {
+        info!("starting in genesis mode — DKG endpoints active, waiting for ceremony");
+    } else if join_mode {
         info!("starting in join mode — waiting for /reshare/receive to initialize key");
     }
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(health))
         .route("/join-info", get(join::join_info_handler))
         .route("/attestation", get(snp_endpoint::attestation_handler))
@@ -374,7 +476,17 @@ async fn main() {
             post(evaluate::partial_evaluate_handler),
         )
         .route("/reshare", post(reshare_handler::reshare_handler))
-        .route("/reshare/receive", post(join::reshare_receive_handler))
+        .route("/reshare/receive", post(join::reshare_receive_handler));
+
+    // Register DKG routes when in genesis mode
+    if genesis_mode {
+        app = app
+            .route("/dkg/round1", post(dkg::round1_handler))
+            .route("/dkg/round2", post(dkg::round2_handler))
+            .route("/dkg/round3", post(dkg::round3_handler));
+    }
+
+    let app = app
         .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
         .with_state(state);
 

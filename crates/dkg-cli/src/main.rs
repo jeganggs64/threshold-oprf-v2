@@ -1,13 +1,17 @@
-//! DKG CLI — orchestrates the FROST DKG ceremony between temporary DKG nodes
-//! and delivers the resulting key shares to production TOPRF nodes using the
-//! reshare/receive endpoint.
+//! DKG CLI — orchestrates the FROST DKG ceremony between production TOPRF
+//! nodes running in genesis mode.
 //!
-//! The CLI never sees plaintext key shares. DKG nodes ECIES-encrypt their
-//! contributions directly to each production node's ephemeral X25519 public key.
-//! The CLI acts as a blind relay, routing encrypted blobs to the correct
-//! production nodes.
+//! With the merged design, each production node started with `--genesis` serves
+//! both DKG endpoints (`/dkg/round1`, `/dkg/round2`, `/dkg/round3`) and normal
+//! endpoints (`/health`, `/join-info`, etc.). After round3 completes, each node
+//! seals its own key share and transitions to normal mode. The CLI never sees
+//! plaintext key material.
 //!
 //! Usage:
+//!   toprf-dkg-cli init \
+//!       --nodes http://localhost:3001,http://localhost:3002,http://localhost:3003
+//!
+//! Legacy usage (backwards-compatible with separate DKG nodes):
 //!   toprf-dkg-cli init \
 //!       --dkg-nodes http://localhost:4001,http://localhost:4002,http://localhost:4003 \
 //!       --production-nodes http://localhost:3001,http://localhost:3002,http://localhost:3003
@@ -37,13 +41,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the full DKG ceremony and deliver shares to production nodes.
+    /// Run the full DKG ceremony (genesis mode: nodes seal their own keys).
     Init {
-        /// Comma-separated DKG node URLs (e.g. http://localhost:4001,http://localhost:4002,http://localhost:4003)
+        /// Comma-separated node URLs (production nodes running with --genesis).
+        /// The same nodes serve both DKG and production endpoints.
+        #[arg(long, value_delimiter = ',')]
+        nodes: Vec<String>,
+
+        /// (Legacy) Comma-separated DKG node URLs (separate DKG nodes).
+        /// When provided with --production-nodes, uses the legacy flow with
+        /// ECIES encryption and share delivery.
         #[arg(long, value_delimiter = ',')]
         dkg_nodes: Vec<String>,
 
-        /// Comma-separated production node URLs (same count as dkg-nodes)
+        /// (Legacy) Comma-separated production node URLs (same count as --dkg-nodes).
         #[arg(long, value_delimiter = ',')]
         production_nodes: Vec<String>,
     },
@@ -65,7 +76,7 @@ enum Commands {
 }
 
 // ---------------------------------------------------------------------------
-// DKG node API types (mirrors dkg-node's request/response types)
+// DKG node API types (mirrors node's dkg module request/response types)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -93,16 +104,22 @@ struct Round3Request {
 }
 
 // ---------------------------------------------------------------------------
-// DKG node encrypted round3 response types
+// Round3 response types
 // ---------------------------------------------------------------------------
 
+/// Response from genesis-mode nodes (merged design) — no encrypted
+/// contributions, the node sealed its own key.
 #[derive(Deserialize)]
-struct EncryptedContribution {
-    from_node_id: u16,
-    encrypted_sub_share: String, // base64 ECIES ciphertext
-    verification_share: String,  // hex, public
+struct Round3Response {
+    node_id: u16,
+    verification_share: String,
+    group_public_key: String,
+    threshold: u16,
+    total_shares: u16,
 }
 
+/// Response from legacy DKG nodes — includes encrypted contributions for
+/// delivery to separate production nodes.
 #[derive(Deserialize)]
 struct Round3EncryptedResponse {
     node_id: u16,
@@ -113,8 +130,15 @@ struct Round3EncryptedResponse {
     encrypted_contributions: BTreeMap<u16, EncryptedContribution>,
 }
 
+#[derive(Deserialize)]
+struct EncryptedContribution {
+    from_node_id: u16,
+    encrypted_sub_share: String, // base64 ECIES ciphertext
+    verification_share: String,  // hex, public
+}
+
 // ---------------------------------------------------------------------------
-// Production node types
+// Production node types (legacy flow)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -160,11 +184,25 @@ async fn main() {
 
     match cli.command {
         Commands::Init {
+            nodes,
             dkg_nodes,
             production_nodes,
         } => {
-            if let Err(e) = run_init(dkg_nodes, production_nodes).await {
-                error!("DKG init failed: {e}");
+            // Determine which flow to use
+            if !nodes.is_empty() && (dkg_nodes.is_empty() && production_nodes.is_empty()) {
+                // New merged flow: --nodes (genesis mode)
+                if let Err(e) = run_init_genesis(nodes).await {
+                    error!("DKG init (genesis) failed: {e}");
+                    std::process::exit(1);
+                }
+            } else if !dkg_nodes.is_empty() && !production_nodes.is_empty() && nodes.is_empty() {
+                // Legacy flow: --dkg-nodes + --production-nodes
+                if let Err(e) = run_init_legacy(dkg_nodes, production_nodes).await {
+                    error!("DKG init (legacy) failed: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!("Error: specify either --nodes (genesis mode) or --dkg-nodes + --production-nodes (legacy mode), not both");
                 std::process::exit(1);
             }
         }
@@ -179,10 +217,210 @@ async fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Init subcommand implementation
+// Init subcommand: genesis mode (merged design)
 // ---------------------------------------------------------------------------
 
-async fn run_init(
+async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let n = nodes.len();
+    if n < 2 {
+        return Err("need at least 2 nodes".into());
+    }
+
+    println!("=== DKG Ceremony (Genesis Mode): {n} nodes ===\n");
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
+    // ------------------------------------------------------------------
+    // Round 1: collect identifiers and round1 packages from each node
+    // ------------------------------------------------------------------
+    println!("[Round 1] Calling /dkg/round1 on each node...");
+
+    let mut round1_identifiers: Vec<String> = Vec::with_capacity(n);
+    let mut round1_packages: Vec<String> = Vec::with_capacity(n);
+
+    for (i, url) in nodes.iter().enumerate() {
+        let resp = client
+            .post(format!("{url}/dkg/round1"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Round1Response>()
+            .await?;
+
+        println!(
+            "  Node {} ({}): identifier={}...",
+            i + 1,
+            url,
+            &resp.identifier[..8.min(resp.identifier.len())]
+        );
+
+        round1_identifiers.push(resp.identifier);
+        round1_packages.push(resp.package);
+    }
+
+    println!("[Round 1] Complete.\n");
+
+    // ------------------------------------------------------------------
+    // Round 2: send each node all OTHER nodes' round1 packages
+    // ------------------------------------------------------------------
+    println!("[Round 2] Calling /dkg/round2 on each node...");
+
+    let mut round2_results: Vec<BTreeMap<String, String>> = Vec::with_capacity(n);
+
+    for (i, url) in nodes.iter().enumerate() {
+        let mut r1_map = BTreeMap::new();
+        for (j, (id, pkg)) in round1_identifiers
+            .iter()
+            .zip(round1_packages.iter())
+            .enumerate()
+        {
+            if j != i {
+                r1_map.insert(id.clone(), pkg.clone());
+            }
+        }
+
+        let req = Round2Request {
+            round1_packages: r1_map,
+        };
+
+        let resp = client
+            .post(format!("{url}/dkg/round2"))
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Round2Response>()
+            .await?;
+
+        println!(
+            "  Node {} ({}): produced {} round2 packages",
+            i + 1,
+            url,
+            resp.round2_packages.len()
+        );
+
+        round2_results.push(resp.round2_packages);
+    }
+
+    println!("[Round 2] Complete.\n");
+
+    // ------------------------------------------------------------------
+    // Round 3: finalize — each node seals its own key share
+    // ------------------------------------------------------------------
+    println!("[Round 3] Calling /dkg/round3 on each node (self-sealing mode)...");
+
+    let mut round3_results: Vec<Round3Response> = Vec::with_capacity(n);
+
+    for (i, url) in nodes.iter().enumerate() {
+        // round1_packages: all OTHER nodes' round1 packages
+        let mut r1_map = BTreeMap::new();
+        for (j, (id, pkg)) in round1_identifiers
+            .iter()
+            .zip(round1_packages.iter())
+            .enumerate()
+        {
+            if j != i {
+                r1_map.insert(id.clone(), pkg.clone());
+            }
+        }
+
+        // round2_packages: for node i, collect round2 packages FROM each other node j
+        // that are addressed TO node i.
+        let my_identifier = &round1_identifiers[i];
+        let mut r2_map = BTreeMap::new();
+        for (j, r2_pkgs) in round2_results.iter().enumerate() {
+            if j != i {
+                if let Some(pkg) = r2_pkgs.get(my_identifier) {
+                    r2_map.insert(round1_identifiers[j].clone(), pkg.clone());
+                } else {
+                    return Err(format!(
+                        "Node {} did not produce a round2 package for node {}",
+                        j + 1,
+                        i + 1
+                    )
+                    .into());
+                }
+            }
+        }
+
+        let req = Round3Request {
+            round1_packages: r1_map,
+            round2_packages: r2_map,
+            production_pubkeys: None, // Not needed — node seals its own key
+        };
+
+        let resp = client
+            .post(format!("{url}/dkg/round3"))
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Round3Response>()
+            .await?;
+
+        println!(
+            "  Node {} ({}): node_id={}, threshold={}, total={}, sealed",
+            i + 1,
+            url,
+            resp.node_id,
+            resp.threshold,
+            resp.total_shares,
+        );
+
+        round3_results.push(resp);
+    }
+
+    println!("[Round 3] Complete.\n");
+
+    // ------------------------------------------------------------------
+    // Verify: all nodes must agree on group public key
+    // ------------------------------------------------------------------
+    let group_public_key = &round3_results[0].group_public_key;
+    let threshold = round3_results[0].threshold;
+    let total_shares = round3_results[0].total_shares;
+
+    for r3 in &round3_results[1..] {
+        if &r3.group_public_key != group_public_key {
+            return Err(format!(
+                "Group public key mismatch: node {} has {} but node {} has {}",
+                round3_results[0].node_id, group_public_key, r3.node_id, r3.group_public_key
+            )
+            .into());
+        }
+    }
+
+    println!("[Verify] All nodes agree on group public key: {group_public_key}");
+    println!("[Verify] Threshold: {threshold}, Total shares: {total_shares}\n");
+
+    // ------------------------------------------------------------------
+    // Summary
+    // ------------------------------------------------------------------
+    println!("=== DKG Ceremony Summary ===");
+    println!("  Group public key: {group_public_key}");
+    println!("  Threshold:        {threshold}");
+    println!("  Total shares:     {total_shares}");
+    println!("  Mode:             Genesis (each node sealed its own key)");
+    println!();
+    for r3 in &round3_results {
+        println!(
+            "  Node {}: verification_share={}...",
+            r3.node_id,
+            &r3.verification_share[..16.min(r3.verification_share.len())]
+        );
+    }
+    println!();
+    println!("DKG ceremony completed successfully.");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Init subcommand: legacy flow (separate DKG nodes + production nodes)
+// ---------------------------------------------------------------------------
+
+async fn run_init_legacy(
     dkg_nodes: Vec<String>,
     production_nodes: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -200,7 +438,7 @@ async fn run_init(
         return Err("need at least 2 nodes".into());
     }
 
-    println!("=== DKG Ceremony: {n} nodes ===\n");
+    println!("=== DKG Ceremony (Legacy Mode): {n} nodes ===\n");
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -270,12 +508,9 @@ async fn run_init(
     // ------------------------------------------------------------------
     println!("[Round 2] Calling /dkg/round2 on each DKG node...");
 
-    // round2_results[i] = the round2 response from DKG node i
-    // Each response contains: { round2_packages: { recipient_id_hex: pkg_json, ... } }
     let mut round2_results: Vec<BTreeMap<String, String>> = Vec::with_capacity(n);
 
     for (i, url) in dkg_nodes.iter().enumerate() {
-        // Build round1_packages map excluding self
         let mut r1_map = BTreeMap::new();
         for (j, (id, pkg)) in round1_identifiers
             .iter()
@@ -321,7 +556,6 @@ async fn run_init(
     let mut round3_results: Vec<Round3EncryptedResponse> = Vec::with_capacity(n);
 
     for (i, url) in dkg_nodes.iter().enumerate() {
-        // round1_packages: all OTHER nodes' round1 packages (same as round2 input)
         let mut r1_map = BTreeMap::new();
         for (j, (id, pkg)) in round1_identifiers
             .iter()
@@ -333,15 +567,11 @@ async fn run_init(
             }
         }
 
-        // round2_packages: for node i, collect round2 packages FROM each other node j
-        // that are addressed TO node i.
         let my_identifier = &round1_identifiers[i];
         let mut r2_map = BTreeMap::new();
         for (j, r2_pkgs) in round2_results.iter().enumerate() {
             if j != i {
-                // From node j's round2 output, get the package addressed to node i
                 if let Some(pkg) = r2_pkgs.get(my_identifier) {
-                    // Key it by sender j's identifier
                     r2_map.insert(round1_identifiers[j].clone(), pkg.clone());
                 } else {
                     return Err(format!(
@@ -409,11 +639,9 @@ async fn run_init(
     // ------------------------------------------------------------------
     println!("[Deliver] Routing encrypted contributions to production nodes...\n");
 
-    // For each production node, gather encrypted contributions from all DKG nodes
     for (i, prod_url) in production_nodes.iter().enumerate() {
         let target_node_id = (i + 1) as u16;
 
-        // Collect encrypted contributions from all DKG nodes for this production node
         let mut contributions: Vec<SerializableReshareContribution> = Vec::new();
         let mut donor_node_ids: Vec<u16> = Vec::new();
 
@@ -449,7 +677,6 @@ async fn run_init(
             donor_node_ids
         );
 
-        // Send to production node
         let req = ReshareReceiveRequest {
             contributions,
             participant_ids: donor_node_ids.clone(),
@@ -486,7 +713,7 @@ async fn run_init(
     println!("  Group public key: {group_public_key}");
     println!("  Threshold:        {threshold}");
     println!("  Total shares:     {total_shares}");
-    println!("  Mode:             ECIES-encrypted (CLI never saw plaintext shares)");
+    println!("  Mode:             Legacy (ECIES-encrypted, CLI relayed shares)");
     println!();
     for r3 in &round3_results {
         println!(
