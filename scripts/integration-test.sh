@@ -328,10 +328,11 @@ fi
 echo ""
 echo "=== Step 8: Testing /attestation endpoint ==="
 
-# In a non-TEE environment the endpoint should return 503
+# Challenge-response attestation: send a nonce, expect 503 (non-TEE)
+TEST_NONCE=$(head -c 32 /dev/urandom | xxd -p -c 64)
 ATT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "http://127.0.0.1:$NODE1_PORT/attestation")
-assert_eq "GET /attestation returns 503 (no TEE hardware)" "503" "$ATT_CODE"
+    "http://127.0.0.1:$NODE1_PORT/attestation?nonce=$TEST_NONCE")
+assert_eq "GET /attestation?nonce=... returns 503 (no TEE hardware)" "503" "$ATT_CODE"
 
 # ---------- 9. Summary ----------
 

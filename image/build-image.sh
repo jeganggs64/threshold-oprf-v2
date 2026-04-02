@@ -57,11 +57,19 @@ PKG_DIR="$WORKDIR/packages"
 mkdir -p "$PKG_DIR"
 cd "$PKG_DIR"
 
-# Download the signed boot chain + Azure kernel
+# Resolve the actual kernel package (linux-image-azure is a meta-package)
+KERNEL_PKG=$(apt-cache depends linux-image-azure 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-azure" | awk '{print $2}' | head -1)
+if [[ -z "$KERNEL_PKG" ]]; then
+    # Fallback: use the generic kernel
+    KERNEL_PKG=$(apt-cache depends linux-image-generic 2>/dev/null | grep "Depends: linux-image-" | grep -v "linux-image-generic" | awk '{print $2}' | head -1)
+fi
+echo "  Kernel package: $KERNEL_PKG"
+
+# Download the signed boot chain + resolved kernel
 apt-get download \
     shim-signed \
     grub-efi-amd64-signed \
-    linux-image-azure \
+    "$KERNEL_PKG" \
     busybox-static \
     ca-certificates 2>/dev/null
 
