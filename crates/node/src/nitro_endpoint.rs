@@ -154,10 +154,19 @@ fn request_nsm_attestation(user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, St
 
     // ioctl number: _IOWR(0x0A, 0, NsmMessage)
     // Direction: read+write (3), magic: 0x0A, number: 0, size: size_of::<NsmMessage>()
-    let nsm_msg_size = std::mem::size_of::<NsmMessage>() as u64;
-    let ioctl_request: u64 = (3 << 30) | (nsm_msg_size << 16) | (0x0A << 8) | 0;
+    let nsm_msg_size = std::mem::size_of::<NsmMessage>() as u32;
+    let ioctl_num = (3u32 << 30) | (nsm_msg_size << 16) | (0x0Au32 << 8);
 
-    let ret = unsafe { libc::ioctl(file.as_raw_fd(), ioctl_request, &mut msg as *mut NsmMessage) };
+    // `as _` lets the compiler cast to whatever type libc::ioctl expects
+    // (Ioctl is i32 on some Linux targets, c_ulong on others)
+    #[allow(clippy::unnecessary_cast)]
+    let ret = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            ioctl_num as _,
+            &mut msg as *mut NsmMessage,
+        )
+    };
     if ret < 0 {
         return Err(format!(
             "NSM ioctl failed: {}",
