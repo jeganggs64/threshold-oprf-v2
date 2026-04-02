@@ -92,7 +92,8 @@ if [[ -z "$GRUBX64" ]]; then
     GRUBX64=$(find "$EXTRACT" -path "*/grub-efi-amd64-signed/*grubx64*" | head -1)
 fi
 VMLINUZ=$(find "$EXTRACT" -name "vmlinuz-*" 2>/dev/null | head -1)
-MODULES_DIR=$(find "$EXTRACT" -path "*/lib/modules/*" -maxdepth 4 -mindepth 4 -type d 2>/dev/null | head -1)
+# Find the kernel version modules directory (e.g., lib/modules/6.17.0-1010-azure)
+MODULES_DIR=$(find "$EXTRACT/lib/modules" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
 BUSYBOX=$(find "$EXTRACT" -name "busybox" -path "*/bin/*" 2>/dev/null | head -1)
 CA_CERTS="$EXTRACT/etc/ssl/certs"
 

@@ -44,14 +44,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-node -p toprf-dkg-node -p toprf-dkg-cli -p toprf-verify
+      - name: Collect binaries
+        run: |
+          mkdir -p artifacts
+          cp target/x86_64-unknown-linux-musl/release/toprf-node artifacts/
+          cp target/x86_64-unknown-linux-musl/release/toprf-dkg-node artifacts/
+          cp target/x86_64-unknown-linux-musl/release/toprf-dkg-cli artifacts/
+          cp target/x86_64-unknown-linux-musl/release/toprf-verify artifacts/
       - uses: actions/upload-artifact@v4
         with:
           name: binaries
-          path: |
-            target/x86_64-unknown-linux-musl/release/toprf-node
-            target/x86_64-unknown-linux-musl/release/toprf-dkg-node
-            target/x86_64-unknown-linux-musl/release/toprf-dkg-cli
-            target/x86_64-unknown-linux-musl/release/toprf-verify
+          path: artifacts/
 
   integration:
     name: Integration Tests
