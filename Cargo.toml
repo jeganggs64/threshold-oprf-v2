@@ -6,6 +6,7 @@ members = [
     "crates/dkg-node",
     "crates/keygen",
     "crates/node",
+    "crates/reshare-cli",
     "crates/seal",
     "verify",
 ]

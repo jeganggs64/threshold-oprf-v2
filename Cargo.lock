@@ -2577,6 +2577,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "toprf-reshare-cli"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "toprf-seal"
 version = "0.1.0"
 dependencies = [
