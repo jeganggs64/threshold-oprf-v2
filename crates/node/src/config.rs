@@ -40,10 +40,9 @@ pub struct PlatformMeasurements {
 }
 
 /// Fetch and parse the well-known config from a URL.
+/// Uses the proxied client so it works inside Nitro enclaves (routed via vsock).
 pub async fn fetch_well_known(url: &str) -> Result<WellKnownConfig, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = crate::outbound_proxy::build_proxied_client()?;
     let config: WellKnownConfig = client.get(url).send().await?.json().await?;
     Ok(config)
 }

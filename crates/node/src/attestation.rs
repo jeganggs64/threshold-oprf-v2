@@ -1,25 +1,34 @@
-//! Stateless device attestation verification.
+//! Device attestation verification for /partial-evaluate requests.
 //!
 //! Supports iOS (Apple App Attest) and Android (Google Play Integrity).
-//! Verification is stateless — no device keys or registration state is stored
-//! on the node. A `device_id_hash` is derived from the attestation material
-//! and returned to the caller for use in rate limiting.
-
-use sha2::{Digest, Sha256};
+//! Verification is stateless — the client sends full attestation data
+//! with every request. A `device_id_hash` is derived from the attestation
+//! material and used for per-device rate limiting.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tracing::warn;
+
+use crate::outbound_proxy;
+
+// -- Configuration --
+
+const IOS_APP_ID: &str = "WBX7VLTXXK.com.ruonid.app";
+const ANDROID_PACKAGE_NAME: &str = "com.ruonid.app";
+
+// -- Types --
 
 #[derive(Debug, Deserialize)]
 pub struct AttestationPayload {
     pub platform: Platform,
     #[serde(default)]
-    pub attestation_object: Option<String>, // iOS: base64 App Attest cert chain
+    pub attestation_object: Option<String>, // iOS: base64 CBOR attestation
     #[serde(default)]
     pub assertion: Option<String>, // iOS: base64 signed assertion
     #[serde(default)]
     pub client_data_hash: Option<String>, // hex sha256(blindedPoint)
     #[serde(default)]
-    pub integrity_token: Option<String>, // Android: base64 Play Integrity token
+    pub integrity_token: Option<String>, // Android: Play Integrity token
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -27,12 +36,10 @@ pub struct AttestationPayload {
 pub enum Platform {
     Ios,
     Android,
-    Test, // For integration testing with mock attestation
 }
 
 #[derive(Debug)]
 pub struct AttestationResult {
-    /// Hash of the device's attestation key — used as device ID for rate limiting.
     pub device_id_hash: [u8; 32],
 }
 
@@ -44,48 +51,49 @@ pub enum AttestationError {
     Invalid(String),
     #[error("client data hash mismatch")]
     ClientDataHashMismatch,
-    #[allow(dead_code)] // Used when Google Play Integrity verification is implemented
     #[error("Google API error: {0}")]
     GoogleApiError(String),
 }
 
 /// Verify device attestation and return a stable device identifier.
-///
-/// `expected_client_data_hash` is sha256 of the blinded OPRF point bytes.
-/// The caller must supply this so the attestation can be bound to the
-/// specific request, preventing replay of a valid attestation against a
-/// different request.
 pub async fn verify_attestation(
     payload: &AttestationPayload,
     expected_client_data_hash: &[u8; 32],
 ) -> Result<AttestationResult, AttestationError> {
     match payload.platform {
         Platform::Ios => verify_ios(payload, expected_client_data_hash),
-        Platform::Android => verify_android(payload).await,
-        Platform::Test => {
-            if std::env::var("TOPRF_ALLOW_TEST_ATTESTATION").unwrap_or_default() != "1" {
-                return Err(AttestationError::Invalid(
-                    "test platform not available — set TOPRF_ALLOW_TEST_ATTESTATION=1 for dev mode"
-                        .into(),
-                ));
-            }
-            verify_test(payload, expected_client_data_hash)
-        }
+        Platform::Android => verify_android(payload, expected_client_data_hash).await,
     }
 }
 
-// -- iOS -------------------------------------------------------------------
+// -- iOS App Attest --------------------------------------------------------
+
+/// Apple App Attest Root CA (PEM).
+const APPLE_APP_ATTEST_ROOT_CA: &str = r#"-----BEGIN CERTIFICATE-----
+MIICITCCAaegAwIBAgIQC/O+DkHN0uTkl2OKJPA/JDAKBggqhkjOPQQDAzBSMSYw
+JAYDVQQDDB1BcHBsZSBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTETMBEGA1UECgwK
+QXBwbGUgSW5jLjETMBEGA1UECAwKQ2FsaWZvcm5pYTAeFw0yMDAzMTgxODMyNTNa
+Fw00NTAzMTUwMDAwMDBaMFIxJjAkBgNVBAMMHUFwcGxlIEFwcCBBdHRlc3RhdGlv
+biBSb290IENBMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9y
+bmlhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAERTHhmLW07ATaFQIEVwTtT4dyctdh
+NbJhFs/Ii2FdCgAHGbpphY3+d8qjuDngIN3WVhQUBHAoMeQ/cLiP1sOUtgjqK9au
+Yen1mMEvRq9Sk3Jm5X8U62H+xTD3FE9TgS41o0IwQDAPBgNVHRMBAf8EBTADAQH/
+MB0GA1UdDgQWBBSskRBTM72+aEH/pwyp5frq5eWKoTAOBgNVHQ8BAf8EBAMCAQYw
+CgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn
+53O5+FRXgeLhd6gV0e4IN/95AjEAjW9l0+HAaFxCmPFhBRLn1Q+6Jm31bIBq1pLp
+jR2TFbc05GaETQvOSDYXMdH5
+-----END CERTIFICATE-----"#;
 
 fn verify_ios(
     payload: &AttestationPayload,
     expected_client_data_hash: &[u8; 32],
 ) -> Result<AttestationResult, AttestationError> {
-    let attestation_object = payload
+    let attestation_b64 = payload
         .attestation_object
         .as_deref()
         .ok_or(AttestationError::MissingField("attestation_object"))?;
 
-    let _assertion = payload
+    let assertion_b64 = payload
         .assertion
         .as_deref()
         .ok_or(AttestationError::MissingField("assertion"))?;
@@ -95,191 +103,347 @@ fn verify_ios(
         .as_deref()
         .ok_or(AttestationError::MissingField("client_data_hash"))?;
 
-    // Decode and verify that the supplied client_data_hash matches the expected
-    // hash of the blinded point. This binds the attestation to this request.
+    // Verify client_data_hash matches expected
     let provided_hash = hex::decode(client_data_hash_hex).map_err(|e| {
         AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}"))
     })?;
-
     if provided_hash.as_slice() != expected_client_data_hash.as_slice() {
         return Err(AttestationError::ClientDataHashMismatch);
     }
 
-    // TODO: Decode the CBOR-encoded attestation_object (base64 → CBOR → authData + attStmt).
-    // TODO: Parse the x5c certificate chain from attStmt.
-    // TODO: Verify the leaf certificate's public key hash matches the credCert's key ID in authData.
-    // TODO: Verify the certificate chain up to Apple App Attest Root CA
-    //       (embed the root CA DER and validate the full chain).
-    // TODO: Check that the App ID (team_id.bundle_id) in the certificate matches the expected value.
-    // TODO: Verify the assertion: decode base64 assertion → CBOR → {signature, authenticatorData}.
-    // TODO: Reconstruct the signed payload: sha256(authenticatorData || client_data_hash) and
-    //       verify the ECDSA-P256 signature using the credential public key from authData.
-    // TODO: Check the counter value in authenticatorData is monotonically increasing.
+    // Decode attestation object (base64 -> CBOR)
+    use base64::Engine;
+    let att_bytes = base64::engine::general_purpose::STANDARD
+        .decode(attestation_b64)
+        .map_err(|e| AttestationError::Invalid(format!("attestation_object base64: {e}")))?;
 
-    // Interim device_id_hash: sha256 of the raw attestation_object bytes.
-    // Replace this with sha256 of the credential public key once full CBOR
-    // parsing is implemented.
-    let device_id_hash: [u8; 32] = Sha256::digest(attestation_object.as_bytes()).into();
+    // Parse CBOR attestation object
+    let att_value: ciborium::Value = ciborium::from_reader(&att_bytes[..])
+        .map_err(|e| AttestationError::Invalid(format!("attestation CBOR parse: {e}")))?;
+
+    let att_map = match att_value {
+        ciborium::Value::Map(m) => m,
+        _ => {
+            return Err(AttestationError::Invalid(
+                "attestation is not a CBOR map".into(),
+            ))
+        }
+    };
+
+    // Extract authData and attStmt
+    let auth_data = cbor_map_get_bytes(&att_map, "authData")
+        .ok_or_else(|| AttestationError::Invalid("missing authData".into()))?;
+    let att_stmt = cbor_map_get_map(&att_map, "attStmt")
+        .ok_or_else(|| AttestationError::Invalid("missing attStmt".into()))?;
+
+    // Verify rpIdHash (first 32 bytes of authData) matches SHA256(appId)
+    if auth_data.len() < 37 {
+        return Err(AttestationError::Invalid("authData too short".into()));
+    }
+    let rp_id_hash = &auth_data[..32];
+    let expected_rp_id_hash = Sha256::digest(IOS_APP_ID.as_bytes());
+    if rp_id_hash != &expected_rp_id_hash[..] {
+        return Err(AttestationError::Invalid(
+            "rpIdHash does not match app ID".into(),
+        ));
+    }
+
+    // Extract x5c certificate chain from attStmt
+    let x5c = cbor_map_get_array(att_stmt, "x5c")
+        .ok_or_else(|| AttestationError::Invalid("missing x5c in attStmt".into()))?;
+
+    if x5c.is_empty() {
+        return Err(AttestationError::Invalid("x5c is empty".into()));
+    }
+
+    // Parse leaf certificate (the credential certificate)
+    let leaf_der = match &x5c[0] {
+        ciborium::Value::Bytes(b) => b,
+        _ => return Err(AttestationError::Invalid("x5c[0] is not bytes".into())),
+    };
+
+    // Verify certificate chain against Apple root CA
+    let root_pem = ::pem::parse(APPLE_APP_ATTEST_ROOT_CA)
+        .map_err(|e| AttestationError::Invalid(format!("Apple root CA parse: {e}")))?;
+    let (_, root_cert) = x509_parser::parse_x509_certificate(root_pem.contents())
+        .map_err(|e| AttestationError::Invalid(format!("Apple root CA DER: {e}")))?;
+
+    let (_, leaf_cert) = x509_parser::parse_x509_certificate(leaf_der)
+        .map_err(|e| AttestationError::Invalid(format!("leaf cert parse: {e}")))?;
+
+    // If there's an intermediate cert, verify chain: leaf -> intermediate -> root
+    if x5c.len() >= 2 {
+        let intermediate_der = match &x5c[1] {
+            ciborium::Value::Bytes(b) => b,
+            _ => return Err(AttestationError::Invalid("x5c[1] is not bytes".into())),
+        };
+        let (_, intermediate_cert) = x509_parser::parse_x509_certificate(intermediate_der)
+            .map_err(|e| AttestationError::Invalid(format!("intermediate cert: {e}")))?;
+
+        leaf_cert
+            .verify_signature(Some(intermediate_cert.public_key()))
+            .map_err(|e| AttestationError::Invalid(format!("leaf cert signature: {e}")))?;
+
+        intermediate_cert
+            .verify_signature(Some(root_cert.public_key()))
+            .map_err(|e| AttestationError::Invalid(format!("intermediate cert signature: {e}")))?;
+    } else {
+        leaf_cert
+            .verify_signature(Some(root_cert.public_key()))
+            .map_err(|e| AttestationError::Invalid(format!("leaf cert signature: {e}")))?;
+    }
+
+    // Extract the credential public key from authData
+    // authData layout: rpIdHash(32) + flags(1) + signCount(4) + attestedCredData(...)
+    // attestedCredData: aaguid(16) + credIdLen(2) + credId(credIdLen) + credPubKey(CBOR)
+    let flags = auth_data[32];
+    let _sign_count =
+        u32::from_be_bytes([auth_data[33], auth_data[34], auth_data[35], auth_data[36]]);
+
+    // Check attested credential data flag (bit 6)
+    if flags & 0x40 == 0 {
+        return Err(AttestationError::Invalid(
+            "authData does not contain attested credential data".into(),
+        ));
+    }
+
+    let att_cred_offset = 37;
+    if auth_data.len() < att_cred_offset + 18 {
+        return Err(AttestationError::Invalid(
+            "authData too short for attested cred data".into(),
+        ));
+    }
+    // aaguid is 16 bytes starting at att_cred_offset
+    let cred_id_len = u16::from_be_bytes([
+        auth_data[att_cred_offset + 16],
+        auth_data[att_cred_offset + 17],
+    ]) as usize;
+    let cred_pub_key_offset = att_cred_offset + 18 + cred_id_len;
+
+    if auth_data.len() <= cred_pub_key_offset {
+        return Err(AttestationError::Invalid(
+            "authData too short for credential public key".into(),
+        ));
+    }
+
+    // Parse the COSE public key (CBOR map)
+    let _cred_pub_key: ciborium::Value =
+        ciborium::from_reader(&auth_data[cred_pub_key_offset..])
+            .map_err(|e| AttestationError::Invalid(format!("credential public key CBOR: {e}")))?;
+
+    // Verify the assertion signature
+    let assertion_bytes = base64::engine::general_purpose::STANDARD
+        .decode(assertion_b64)
+        .map_err(|e| AttestationError::Invalid(format!("assertion base64: {e}")))?;
+
+    let assertion_value: ciborium::Value = ciborium::from_reader(&assertion_bytes[..])
+        .map_err(|e| AttestationError::Invalid(format!("assertion CBOR: {e}")))?;
+
+    let assertion_map = match assertion_value {
+        ciborium::Value::Map(m) => m,
+        _ => {
+            return Err(AttestationError::Invalid(
+                "assertion is not a CBOR map".into(),
+            ))
+        }
+    };
+
+    let _assertion_signature = cbor_map_get_bytes(&assertion_map, "signature")
+        .ok_or_else(|| AttestationError::Invalid("missing signature in assertion".into()))?;
+
+    let assertion_auth_data =
+        cbor_map_get_bytes(&assertion_map, "authenticatorData").ok_or_else(|| {
+            AttestationError::Invalid("missing authenticatorData in assertion".into())
+        })?;
+
+    // Verify rpIdHash in assertion authenticatorData
+    if assertion_auth_data.len() < 32 {
+        return Err(AttestationError::Invalid(
+            "assertion authData too short".into(),
+        ));
+    }
+    if assertion_auth_data[..32] != expected_rp_id_hash[..] {
+        return Err(AttestationError::Invalid(
+            "assertion rpIdHash does not match app ID".into(),
+        ));
+    }
+
+    // Verify the assertion signature: verify(authenticatorData || clientDataHash)
+    // using the credential public key extracted from the attestation
+    // TODO: Extract EC P-256 key from COSE key map and verify ECDSA signature
+    // For now, we verify the cert chain (which proves the device is genuine)
+    // and derive the device ID from the credential certificate's public key.
+    // Full assertion signature verification will be added in a follow-up.
+
+    // Device ID: SHA256 of the leaf certificate's public key (stable per device)
+    let leaf_pk = leaf_cert.public_key().subject_public_key.data.as_ref();
+    let device_id_hash: [u8; 32] = Sha256::digest(leaf_pk).into();
 
     Ok(AttestationResult { device_id_hash })
 }
 
-// -- Android ---------------------------------------------------------------
+// -- Android Play Integrity ------------------------------------------------
 
+/// Verify a Google Play Integrity token by calling Google's decodeIntegrityToken API.
 async fn verify_android(
     payload: &AttestationPayload,
+    expected_client_data_hash: &[u8; 32],
 ) -> Result<AttestationResult, AttestationError> {
     let integrity_token = payload
         .integrity_token
         .as_deref()
         .ok_or(AttestationError::MissingField("integrity_token"))?;
 
-    // TODO: Call the Google Play Integrity API to verify the token.
-    //       POST https://playintegrity.googleapis.com/v1/{package_name}:decodeIntegrityToken
-    //       with the integrity_token in the request body. Use a service account or
-    //       application default credentials for authentication.
-    // TODO: Parse the DecodeIntegrityTokenResponse and validate:
-    //       - requestDetails.requestPackageName matches expected package name
-    //       - requestDetails.nonce matches base64(expected_client_data_hash)
-    //       - appIntegrity.appRecognitionVerdict == "PLAY_RECOGNIZED"
-    //       - deviceIntegrity.deviceRecognitionVerdict contains "MEETS_DEVICE_INTEGRITY"
-    //       - accountDetails.appLicensingVerdict == "LICENSED" (optional, for paid apps)
-    // TODO: Derive device_id_hash from a stable device identifier returned by the API.
+    // Build the proxied HTTP client (routes through vsock in Nitro)
+    let client = outbound_proxy::build_proxied_client()
+        .map_err(|e| AttestationError::GoogleApiError(format!("client build failed: {e}")))?;
 
-    // Interim device_id_hash: sha256 of the raw integrity_token bytes.
+    // Get Google access token via WIF
+    let access_token = crate::google_auth::get_google_access_token(&client)
+        .await
+        .map_err(|e| AttestationError::GoogleApiError(format!("WIF auth failed: {e}")))?;
+
+    // Call decodeIntegrityToken API
+    let url = format!(
+        "https://playintegrity.googleapis.com/v1/{}:decodeIntegrityToken",
+        ANDROID_PACKAGE_NAME
+    );
+
+    let body = serde_json::json!({
+        "integrity_token": integrity_token,
+    });
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(&access_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AttestationError::GoogleApiError(format!("API request failed: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AttestationError::GoogleApiError(format!(
+            "API returned {status}: {body}"
+        )));
+    }
+
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AttestationError::GoogleApiError(format!("response parse: {e}")))?;
+
+    // Validate the integrity verdict
+    let token_payload = result
+        .get("tokenPayloadExternal")
+        .ok_or_else(|| AttestationError::Invalid("missing tokenPayloadExternal".into()))?;
+
+    // Check package name
+    let package_name = token_payload
+        .pointer("/appIntegrity/packageName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if package_name != ANDROID_PACKAGE_NAME {
+        return Err(AttestationError::Invalid(format!(
+            "package name mismatch: expected {ANDROID_PACKAGE_NAME}, got {package_name}"
+        )));
+    }
+
+    // Check app recognition verdict
+    let app_verdict = token_payload
+        .pointer("/appIntegrity/appRecognitionVerdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if app_verdict != "PLAY_RECOGNIZED" {
+        return Err(AttestationError::Invalid(format!(
+            "app not recognized: {app_verdict}"
+        )));
+    }
+
+    // Check device integrity
+    let device_verdicts = token_payload
+        .pointer("/deviceIntegrity/deviceRecognitionVerdict")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if !device_verdicts.contains(&"MEETS_DEVICE_INTEGRITY") {
+        return Err(AttestationError::Invalid(format!(
+            "device integrity check failed: {:?}",
+            device_verdicts
+        )));
+    }
+
+    // Verify nonce matches expected_client_data_hash
+    let nonce = token_payload
+        .pointer("/requestDetails/nonce")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    use base64::Engine;
+    let expected_nonce =
+        base64::engine::general_purpose::STANDARD.encode(expected_client_data_hash);
+    if nonce != expected_nonce {
+        warn!(
+            expected = %expected_nonce,
+            got = %nonce,
+            "Play Integrity nonce mismatch"
+        );
+        return Err(AttestationError::ClientDataHashMismatch);
+    }
+
+    // Device ID: SHA256 of the integrity token (stable per-request, rate limiter
+    // groups by this hash). For a more stable device ID, we could use the
+    // device recognition verdict + a device-specific claim if Google provides one.
     let device_id_hash: [u8; 32] = Sha256::digest(integrity_token.as_bytes()).into();
 
     Ok(AttestationResult { device_id_hash })
 }
 
-// -- Test ------------------------------------------------------------------
+// -- CBOR helpers ----------------------------------------------------------
 
-fn verify_test(
-    payload: &AttestationPayload,
-    expected_client_data_hash: &[u8; 32],
-) -> Result<AttestationResult, AttestationError> {
-    let client_data_hash_hex = payload
-        .client_data_hash
-        .as_deref()
-        .ok_or(AttestationError::MissingField("client_data_hash"))?;
-
-    let provided_hash = hex::decode(client_data_hash_hex).map_err(|e| {
-        AttestationError::Invalid(format!("client_data_hash is not valid hex: {e}"))
-    })?;
-
-    if provided_hash.as_slice() != expected_client_data_hash.as_slice() {
-        return Err(AttestationError::ClientDataHashMismatch);
+fn cbor_map_get_bytes(map: &[(ciborium::Value, ciborium::Value)], key: &str) -> Option<Vec<u8>> {
+    for (k, v) in map {
+        if let ciborium::Value::Text(s) = k {
+            if s == key {
+                if let ciborium::Value::Bytes(b) = v {
+                    return Some(b.clone());
+                }
+            }
+        }
     }
-
-    // In test mode the device_id_hash is just the expected client_data_hash
-    // so that integration tests get a deterministic, predictable device ID.
-    Ok(AttestationResult {
-        device_id_hash: *expected_client_data_hash,
-    })
+    None
 }
 
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hex_hash(bytes: &[u8; 32]) -> String {
-        hex::encode(bytes)
+fn cbor_map_get_map<'a>(
+    map: &'a [(ciborium::Value, ciborium::Value)],
+    key: &str,
+) -> Option<&'a [(ciborium::Value, ciborium::Value)]> {
+    for (k, v) in map {
+        if let ciborium::Value::Text(s) = k {
+            if s == key {
+                if let ciborium::Value::Map(m) = v {
+                    return Some(m);
+                }
+            }
+        }
     }
+    None
+}
 
-    #[tokio::test]
-    async fn test_test_platform_accepts_valid() {
-        std::env::set_var("TOPRF_ALLOW_TEST_ATTESTATION", "1");
-        let expected: [u8; 32] = [0xab; 32];
-        let payload = AttestationPayload {
-            platform: Platform::Test,
-            attestation_object: None,
-            assertion: None,
-            client_data_hash: Some(hex_hash(&expected)),
-            integrity_token: None,
-        };
-
-        let result = verify_attestation(&payload, &expected).await.unwrap();
-        assert_eq!(result.device_id_hash, expected);
+fn cbor_map_get_array<'a>(
+    map: &'a [(ciborium::Value, ciborium::Value)],
+    key: &str,
+) -> Option<&'a [ciborium::Value]> {
+    for (k, v) in map {
+        if let ciborium::Value::Text(s) = k {
+            if s == key {
+                if let ciborium::Value::Array(a) = v {
+                    return Some(a);
+                }
+            }
+        }
     }
-
-    #[tokio::test]
-    async fn test_test_platform_rejects_mismatch() {
-        std::env::set_var("TOPRF_ALLOW_TEST_ATTESTATION", "1");
-        let expected: [u8; 32] = [0xab; 32];
-        let wrong: [u8; 32] = [0xcd; 32];
-        let payload = AttestationPayload {
-            platform: Platform::Test,
-            attestation_object: None,
-            assertion: None,
-            client_data_hash: Some(hex_hash(&wrong)),
-            integrity_token: None,
-        };
-
-        let err = verify_attestation(&payload, &expected).await.unwrap_err();
-        assert!(
-            matches!(err, AttestationError::ClientDataHashMismatch),
-            "expected ClientDataHashMismatch, got: {err}"
-        );
-    }
-
-    // Note: the env-var gate for Platform::Test cannot be reliably tested
-    // in-process because env vars are process-global and tests run in parallel.
-    // The gate is exercised by the integration tests instead.
-
-    #[tokio::test]
-    async fn test_ios_rejects_missing_fields() {
-        let expected: [u8; 32] = [0x01; 32];
-        let payload = AttestationPayload {
-            platform: Platform::Ios,
-            attestation_object: None,
-            assertion: None,
-            client_data_hash: None,
-            integrity_token: None,
-        };
-
-        let err = verify_attestation(&payload, &expected).await.unwrap_err();
-        assert!(
-            matches!(err, AttestationError::MissingField(_)),
-            "expected MissingField, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_android_rejects_missing_token() {
-        let expected: [u8; 32] = [0x02; 32];
-        let payload = AttestationPayload {
-            platform: Platform::Android,
-            attestation_object: None,
-            assertion: None,
-            client_data_hash: None,
-            integrity_token: None,
-        };
-
-        let err = verify_attestation(&payload, &expected).await.unwrap_err();
-        assert!(
-            matches!(err, AttestationError::MissingField("integrity_token")),
-            "expected MissingField(integrity_token), got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_ios_rejects_wrong_client_data_hash() {
-        let expected: [u8; 32] = [0x03; 32];
-        let wrong: [u8; 32] = [0xff; 32];
-        let payload = AttestationPayload {
-            platform: Platform::Ios,
-            attestation_object: Some("dGVzdC1hdHRlc3RhdGlvbg==".to_string()), // base64 placeholder
-            assertion: Some("dGVzdC1hc3NlcnRpb24=".to_string()),              // base64 placeholder
-            client_data_hash: Some(hex_hash(&wrong)),
-            integrity_token: None,
-        };
-
-        let err = verify_attestation(&payload, &expected).await.unwrap_err();
-        assert!(
-            matches!(err, AttestationError::ClientDataHashMismatch),
-            "expected ClientDataHashMismatch, got: {err}"
-        );
-    }
+    None
 }

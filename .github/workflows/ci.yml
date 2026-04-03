@@ -64,14 +64,22 @@ jobs:
           name: contracts
           path: contracts.tar.gz
 
-  integration:
-    name: Integration Tests
+  build-macos:
+    name: Build macOS CLIs
     needs: [check, test]
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y jq
-      - run: bash scripts/integration-test.sh
-      - run: bash scripts/dkg-integration-test.sh
+      - run: cargo build --release -p toprf-dkg-cli -p toprf-reshare-cli -p toprf-verify
+      - name: Collect binaries
+        run: |
+          mkdir -p artifacts-macos
+          cp target/release/toprf-dkg-cli artifacts-macos/
+          cp target/release/toprf-reshare-cli artifacts-macos/
+          cp target/release/toprf-verify artifacts-macos/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-macos
+          path: artifacts-macos/

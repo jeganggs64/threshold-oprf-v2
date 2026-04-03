@@ -21,10 +21,12 @@ mod attestation;
 pub mod config;
 mod dkg;
 mod evaluate;
+mod google_auth;
 mod join;
 #[cfg(feature = "nitro")]
 mod nitro_endpoint;
 mod nitro_verify;
+pub mod outbound_proxy;
 mod rate_limit;
 mod reshare_handler;
 #[cfg(feature = "snp")]
@@ -277,6 +279,9 @@ async fn main() {
         }
         i += 1;
     }
+
+    // -- Start outbound vsock bridges (Nitro only) --
+    outbound_proxy::start_bridges();
 
     // -- Fetch well-known config --
     const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";

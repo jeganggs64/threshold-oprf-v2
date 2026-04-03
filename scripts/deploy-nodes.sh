@@ -39,7 +39,6 @@ TOPRF_INSTANCE_TYPE="${TOPRF_INSTANCE_TYPE:-c5a.xlarge}"
 TOPRF_MODE="${TOPRF_MODE:-genesis}"
 TOPRF_THRESHOLD="${TOPRF_THRESHOLD:-2}"
 TOPRF_TOTAL="${TOPRF_TOTAL:-3}"
-TOPRF_DEBUG="${TOPRF_DEBUG:-false}"
 TOPRF_CLI_DIR="${TOPRF_CLI_DIR:-}"
 
 # Parse regions into array
@@ -55,9 +54,6 @@ echo "  Key:       $TOPRF_KEY_NAME"
 echo "  Image dir: $TOPRF_IMAGE_DIR"
 if [[ "$TOPRF_MODE" == "genesis" ]]; then
     echo "  Threshold: $TOPRF_THRESHOLD of $TOPRF_TOTAL"
-fi
-if [[ "$TOPRF_DEBUG" == "true" ]]; then
-    echo "  WARNING: Debug mode enabled (PCRs will be zeros)"
 fi
 echo ""
 
@@ -276,7 +272,7 @@ AEOF
 
             cat > /tmp/init.sh <<SEOF
 #!/bin/sh
-TOPRF_ALLOW_TEST_ATTESTATION=1 exec /toprf-node \\\\
+exec /toprf-node \\\\
     --genesis \"$peers\" \\\\
     --node-id $node_id \\\\
     --threshold $TOPRF_THRESHOLD \\\\
@@ -307,16 +303,22 @@ DEOF
     # Step 7: Launch enclave + socat
     # The enclave launch steals CPUs from the parent which can kill the SSH
     # session. We ignore the SSH exit code and reconnect after a delay.
-    local debug_flag=""
-    if [[ "$TOPRF_DEBUG" == "true" ]]; then
-        debug_flag="--debug-mode"
-    fi
-
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
         sudo nitro-cli run-enclave --eif-path ~/toprf-node.eif \
-            --cpu-count 2 --memory 256 --enclave-cid 16 $debug_flag 2>&1
+            --cpu-count 2 --memory 256 --enclave-cid 16 2>&1
         sleep 2
+
+        # Inbound proxy: TCP:3001 -> vsock (clients reach the enclave)
         nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
+
+        # Outbound proxies: vsock -> internet (enclave reaches external services)
+        # The enclave's binary bridges TCP 127.0.0.1:<port> -> vsock CID 3:<port>
+        # These vsock-proxy instances forward vsock connections to the real endpoints
+        nohup vsock-proxy 8080 169.254.169.254 80 > ~/proxy-metadata.log 2>&1 &
+        nohup vsock-proxy 8443 sts.googleapis.com 443 > ~/proxy-google-sts.log 2>&1 &
+        nohup vsock-proxy 8444 playintegrity.googleapis.com 443 > ~/proxy-play-integrity.log 2>&1 &
+        nohup vsock-proxy 8445 ruonlabs.com 443 > ~/proxy-well-known.log 2>&1 &
+        nohup vsock-proxy 8446 iamcredentials.googleapis.com 443 > ~/proxy-google-iam.log 2>&1 &
     " 2>&1 || true
 
     # Wait for enclave to boot (~10s for well-known timeout + startup)
