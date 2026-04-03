@@ -125,6 +125,47 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
         .build()?;
 
     // ------------------------------------------------------------------
+    // Configure each node for genesis mode
+    // ------------------------------------------------------------------
+    println!("[Configure] Setting genesis mode on each node...");
+
+    let threshold = 2u16; // TODO: make configurable if needed
+    let total = n as u16;
+
+    for (i, url) in nodes.iter().enumerate() {
+        let node_id = (i + 1) as u16;
+        let body = serde_json::json!({
+            "mode": "genesis",
+            "node_id": node_id,
+            "threshold": threshold,
+            "total": total,
+        });
+
+        let resp = client
+            .post(format!("{url}/configure"))
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            println!(
+                "  Node {} ({}): configured (genesis, id={})",
+                node_id, url, node_id
+            );
+        } else if resp.status() == 403 {
+            println!(
+                "  Node {} ({}): already configured (continuing)",
+                node_id, url
+            );
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Node {} configure failed ({}): {}", node_id, status, body).into());
+        }
+    }
+    println!("[Configure] Complete.\n");
+
+    // ------------------------------------------------------------------
     // Round 1: collect identifiers and round1 packages from each node
     // ------------------------------------------------------------------
     println!("[Round 1] Calling /dkg/round1 on each node...");

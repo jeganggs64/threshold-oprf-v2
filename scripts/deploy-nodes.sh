@@ -258,41 +258,11 @@ AEOF
         "$TOPRF_IMAGE_DIR/toprf-node" \
         ec2-user@"$ip":~
 
-    # Step 6: Load image, build EIF
-    if [[ "$TOPRF_MODE" == "genesis" ]]; then
-        # Genesis: create per-node init.sh
-        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
-            sudo docker load < ~/toprf-node-enclave.tar.gz 2>&1 | tail -1
-
-            cat > /tmp/init.sh <<SEOF
-#!/bin/sh
-exec /toprf-node \\\\
-    --genesis \"$peers\" \\\\
-    --node-id $node_id \\\\
-    --threshold $TOPRF_THRESHOLD \\\\
-    --total $TOPRF_TOTAL \\\\
-    --port 3001
-SEOF
-            chmod +x /tmp/init.sh
-
-            cat > /tmp/Dockerfile.genesis <<'DEOF'
-FROM toprf-node-enclave:latest
-COPY init.sh /init.sh
-RUN chmod +x /init.sh
-ENTRYPOINT [\"/init.sh\"]
-CMD []
-DEOF
-            cd /tmp
-            sudo docker build -t toprf-node-enclave:genesis -f Dockerfile.genesis . 2>&1 | tail -1
-            sudo nitro-cli build-enclave --docker-uri toprf-node-enclave:genesis --output-file ~/toprf-node.eif 2>&1 | grep PCR0
-        " 2>&1
-    else
-        # Join mode: use standard image as-is
-        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
-            sudo docker load < ~/toprf-node-enclave.tar.gz 2>&1 | tail -1
-            sudo nitro-cli build-enclave --docker-uri toprf-node-enclave:latest --output-file ~/toprf-node.eif 2>&1 | grep PCR0
-        " 2>&1
-    fi
+    # Step 6: Load image, build EIF (same image for all nodes — identical PCRs)
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
+        sudo docker load < ~/toprf-node-enclave.tar.gz 2>&1 | tail -1
+        sudo nitro-cli build-enclave --docker-uri toprf-node-enclave:latest --output-file ~/toprf-node.eif 2>&1 | grep PCR0
+    " 2>&1
 
     # Step 7: Launch enclave + socat
     # The enclave launch steals CPUs from the parent which can kill the SSH

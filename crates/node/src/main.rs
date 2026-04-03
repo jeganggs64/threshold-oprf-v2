@@ -4,21 +4,22 @@
 //! evaluations. The client collects threshold-many partial evaluations and
 //! performs Lagrange combination locally.
 //!
-//! Key loading: keys are generated during DKG (--genesis mode) or received
-//! via resharing (--join mode). Keys exist only in enclave memory.
+//! Nodes boot from a single identical image. Configuration (genesis vs join)
+//! is sent at runtime via POST /configure from the DKG CLI.
 //!
 //! Endpoints:
-//!   GET  /health           — liveness + key status
+//!   POST /configure       — set mode (genesis or join), called once
+//!   GET  /health          — liveness + key status
 //!   POST /partial-evaluate — partial OPRF evaluation
-//!   POST /reshare          — reshare donor (generates and returns sub-share)
-//!   GET  /attestation      — TEE attestation (feature-gated: nitro or snp)
+//!   POST /reshare         — reshare donor
+//!   GET  /attestation     — TEE attestation (feature-gated: nitro or snp)
 //!
 //! Usage:
-//!   toprf-node --genesis "http://peer1:3001,http://peer2:3001" --node-id 1 --threshold 2 --total 3
-//!   toprf-node --join --port 3001
+//!   toprf-node --port 3001
 
 mod attestation;
 pub mod config;
+mod configure;
 mod dkg;
 mod evaluate;
 mod google_auth;
@@ -43,7 +44,7 @@ use axum::{Json, Router};
 use k256::Scalar;
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use zeroize::Zeroize;
 
 #[cfg(target_os = "linux")]
@@ -52,32 +53,27 @@ mod vsock_server;
 // -- Application state --
 
 /// TTL for reshare attestation digest replay protection (1 hour).
-/// Entries older than this are evicted on each insertion. A rotation cycle
-/// completes well within this window.
 const RESHARE_SEEN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 pub struct NodeState {
-    /// The loaded key material. Set exactly once at boot.
+    /// The loaded key material. Set exactly once after DKG or reshare.
     pub(crate) loaded_key: OnceLock<LoadedKey>,
-    /// Tracks attestation report digests already processed by /reshare
-    /// to prevent replay attacks. Entries are evicted after RESHARE_SEEN_TTL.
+    /// Tracks attestation report digests already processed by /reshare.
     pub reshare_seen: std::sync::Mutex<Vec<([u8; 32], std::time::Instant)>>,
-    /// SHA-256 hash of the node binary, computed at boot. Used in attestation
-    /// REPORT_DATA[0..32] as part of the identity hash.
+    /// SHA-256 hash of the node binary, computed at boot.
     pub binary_hash: Option<String>,
-    /// Per-device rate limiter for /partial-evaluate (max 5 evaluations per day).
+    /// Per-device rate limiter for /partial-evaluate.
     pub rate_limiter: rate_limit::RateLimiter,
-    /// Directory for persisting key files. Defaults to current directory.
+    /// Directory for persisting key files.
     pub data_dir: Option<String>,
-    /// Guards against concurrent join operations (TOCTOU protection).
+    /// Guards against concurrent join operations.
     pub join_in_progress: std::sync::Mutex<()>,
-    /// Ephemeral X25519 keypair for ECIES decryption in join mode.
-    /// Generated at boot when --join is specified.
-    pub join_keypair: Option<(x25519_dalek::StaticSecret, x25519_dalek::PublicKey)>,
-    /// DKG state for genesis mode. `Some` only when the node was started
-    /// with `--genesis`. After round3 completes and the key is sealed,
-    /// the DKG endpoints return 403.
-    pub dkg_state: Option<Arc<dkg::DkgState>>,
+    /// Ephemeral X25519 keypair for ECIES decryption (always generated at boot).
+    pub join_keypair: (x25519_dalek::StaticSecret, x25519_dalek::PublicKey),
+    /// DKG state — set via /configure when mode is "genesis".
+    pub dkg_state: OnceLock<Arc<dkg::DkgState>>,
+    /// Configuration mode — set once via /configure ("genesis" or "join").
+    pub configured: OnceLock<String>,
 }
 
 #[allow(dead_code)]
@@ -90,7 +86,6 @@ pub(crate) struct LoadedKey {
     pub(crate) total_shares: u16,
 }
 
-// Manual Debug to avoid leaking key_share
 impl std::fmt::Debug for LoadedKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedKey")
@@ -100,8 +95,6 @@ impl std::fmt::Debug for LoadedKey {
     }
 }
 
-// Zeroize key material on drop (defense-in-depth; LoadedKey lives in OnceLock
-// for the process lifetime, but this ensures cleanup if that ever changes).
 impl Drop for LoadedKey {
     fn drop(&mut self) {
         self.key_share.zeroize();
@@ -115,19 +108,29 @@ struct HealthResponse {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
 }
 
 // -- Handlers --
 
 async fn health(State(state): State<Arc<NodeState>>) -> Json<HealthResponse> {
+    let mode = state.configured.get().cloned();
+
     match state.loaded_key.get() {
         Some(key) => Json(HealthResponse {
             status: "ready".into(),
             node_id: Some(key.node_id),
+            mode,
         }),
         None => Json(HealthResponse {
-            status: "waiting_for_key".into(),
+            status: if mode.is_some() {
+                "waiting_for_key".into()
+            } else {
+                "waiting_for_config".into()
+            },
             node_id: None,
+            mode,
         }),
     }
 }
@@ -136,7 +139,6 @@ async fn health(State(state): State<Arc<NodeState>>) -> Json<HealthResponse> {
 
 #[tokio::main]
 async fn main() {
-    // Install the default rustls crypto provider (ring via reqwest's rustls-tls)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     tracing_subscriber::fmt::init();
@@ -148,12 +150,7 @@ async fn main() {
     let mut tls_key: Option<String> = None;
     let mut client_ca: Option<String> = None;
     let mut data_dir: Option<String> = None;
-    let mut join_mode = false;
     let mut tcp_mode = false;
-    let mut genesis_peers: Option<String> = None;
-    let mut genesis_node_id: Option<u16> = None;
-    let mut genesis_threshold: Option<u16> = None;
-    let mut genesis_total: Option<u16> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -198,50 +195,6 @@ async fn main() {
                 }
                 data_dir = Some(args[i].clone());
             }
-            "--genesis" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --genesis (comma-separated peer URLs)");
-                    std::process::exit(1);
-                }
-                genesis_peers = Some(args[i].clone());
-            }
-            "--node-id" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --node-id");
-                    std::process::exit(1);
-                }
-                genesis_node_id = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("--node-id must be a positive integer");
-                    std::process::exit(1);
-                }));
-            }
-            "--threshold" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --threshold");
-                    std::process::exit(1);
-                }
-                genesis_threshold = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("--threshold must be a positive integer");
-                    std::process::exit(1);
-                }));
-            }
-            "--total" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("missing value for --total");
-                    std::process::exit(1);
-                }
-                genesis_total = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("--total must be a positive integer");
-                    std::process::exit(1);
-                }));
-            }
-            "--join" => {
-                join_mode = true;
-            }
             "--tcp" => {
                 tcp_mode = true;
             }
@@ -250,24 +203,15 @@ async fn main() {
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  -p, --port <PORT>           Listen port (default: 3001)");
-                eprintln!("      --data-dir <PATH>       Directory for persisting key files (default: current directory)");
-                eprintln!("      --tcp                   Use TCP listener instead of vsock (default on non-Linux; for dev/test)");
-                eprintln!("      --join                  Start in join mode: accept /reshare/receive to receive a key share");
-                eprintln!("      --genesis <PEERS>       Start in genesis mode: run FROST DKG with comma-separated peer URLs");
-                eprintln!("      --node-id <ID>          This node's ID (required for --genesis)");
-                eprintln!("      --threshold <T>         Minimum signers threshold (required for --genesis)");
-                eprintln!("      --total <N>             Total number of signers (required for --genesis)");
+                eprintln!("      --data-dir <PATH>       Directory for persisting key files");
+                eprintln!("      --tcp                   Use TCP instead of vsock (dev/test)");
                 eprintln!("      --tls-cert <PATH>       TLS server certificate (PEM)");
                 eprintln!("      --tls-key <PATH>        TLS server private key (PEM)");
-                eprintln!("      --client-ca <PATH>      CA cert for client auth (enables mTLS)");
+                eprintln!("      --client-ca <PATH>      CA cert for client auth (mTLS)");
                 eprintln!("  -h, --help                  Show this help");
                 eprintln!();
-                eprintln!("Environment:");
-                eprintln!("  PORT                        Listen port (default: 3001)");
-                eprintln!();
-                eprintln!("When --tls-cert and --tls-key are provided, the node serves HTTPS.");
-                eprintln!("When --client-ca is also provided, clients must present a certificate");
-                eprintln!("signed by that CA (mutual TLS).");
+                eprintln!("The node boots in 'waiting_for_config' state.");
+                eprintln!("Send POST /configure to set genesis or join mode.");
                 return;
             }
             other => {
@@ -281,7 +225,7 @@ async fn main() {
     // -- Start outbound vsock bridges (Nitro only) --
     outbound_proxy::start_bridges();
 
-    // Compute sha256 of own binary at boot (for attestation identity hash)
+    // Compute sha256 of own binary at boot
     let binary_hash = std::env::current_exe()
         .ok()
         .and_then(|path| std::fs::read(&path).ok())
@@ -295,63 +239,13 @@ async fn main() {
         warn!("could not compute binary hash (non-fatal)");
     }
 
-    // -- Genesis mode setup --
-    let genesis_mode = genesis_peers.is_some();
-    let dkg_state = if genesis_mode {
-        let node_id = genesis_node_id.unwrap_or_else(|| {
-            eprintln!("--node-id is required when --genesis is specified");
-            std::process::exit(1);
-        });
-        let threshold = genesis_threshold.unwrap_or_else(|| {
-            eprintln!("--threshold is required when --genesis is specified");
-            std::process::exit(1);
-        });
-        let total = genesis_total.unwrap_or_else(|| {
-            eprintln!("--total is required when --genesis is specified");
-            std::process::exit(1);
-        });
-
-        if node_id == 0 {
-            eprintln!("--node-id must be >= 1");
-            std::process::exit(1);
-        }
-        if threshold < 2 {
-            eprintln!("--threshold must be >= 2");
-            std::process::exit(1);
-        }
-        if total < threshold {
-            eprintln!("--total must be >= --threshold");
-            std::process::exit(1);
-        }
-
-        info!(
-            node_id = node_id,
-            threshold = threshold,
-            total = total,
-            "starting in genesis mode — FROST DKG endpoints active"
-        );
-
-        Some(Arc::new(dkg::DkgState::new(node_id, threshold, total)))
-    } else {
-        None
-    };
-
-    // Genesis mode implies join behavior (no key loaded), so generate
-    // an ephemeral keypair for /join-info compatibility.
-    let effective_join_mode = join_mode || genesis_mode;
-
-    // Generate ephemeral X25519 keypair in join mode for ECIES decryption
-    let join_keypair = if effective_join_mode {
-        let (secret, pubkey_bytes) = toprf_seal::ecies::generate_keypair();
-        let pubkey = x25519_dalek::PublicKey::from(pubkey_bytes);
-        info!(
-            ephemeral_pubkey = %hex::encode(pubkey.as_bytes()),
-            "generated X25519 keypair for join mode ECIES"
-        );
-        Some((secret, pubkey))
-    } else {
-        None
-    };
+    // Always generate ephemeral keypair (needed for both genesis and join)
+    let (secret, pubkey_bytes) = toprf_seal::ecies::generate_keypair();
+    let pubkey = x25519_dalek::PublicKey::from(pubkey_bytes);
+    info!(
+        ephemeral_pubkey = %hex::encode(pubkey.as_bytes()),
+        "generated X25519 keypair for ECIES"
+    );
 
     let state = Arc::new(NodeState {
         loaded_key: OnceLock::new(),
@@ -360,27 +254,27 @@ async fn main() {
         rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
         data_dir,
         join_in_progress: std::sync::Mutex::new(()),
-        join_keypair,
-        dkg_state,
+        join_keypair: (secret, pubkey),
+        dkg_state: OnceLock::new(),
+        configured: OnceLock::new(),
     });
-
-    if genesis_mode {
-        info!("starting in genesis mode — DKG endpoints active, waiting for ceremony");
-    } else if join_mode {
-        info!("starting in join mode — waiting for /reshare/receive to initialize key");
-    }
 
     let mut app = Router::new()
         .route("/health", get(health))
+        .route("/configure", post(configure::configure_handler))
         .route("/join-info", get(join::join_info_handler))
         .route(
             "/partial-evaluate",
             post(evaluate::partial_evaluate_handler),
         )
         .route("/reshare", post(reshare_handler::reshare_handler))
-        .route("/reshare/receive", post(join::reshare_receive_handler));
+        .route("/reshare/receive", post(join::reshare_receive_handler))
+        // DKG routes are always registered — they check dkg_state internally
+        .route("/dkg/round1", post(dkg::round1_handler))
+        .route("/dkg/round2", post(dkg::round2_handler))
+        .route("/dkg/round3", post(dkg::round3_handler));
 
-    // Platform-specific attestation endpoint — one per image
+    // Platform-specific attestation endpoint
     #[cfg(feature = "nitro")]
     {
         app = app.route(
@@ -393,40 +287,28 @@ async fn main() {
         app = app.route("/attestation", get(snp_endpoint::attestation_handler));
     }
 
-    // Register DKG routes when in genesis mode
-    if genesis_mode {
-        app = app
-            .route("/dkg/round1", post(dkg::round1_handler))
-            .route("/dkg/round2", post(dkg::round2_handler))
-            .route("/dkg/round3", post(dkg::round3_handler));
-    }
-
     let app = app
-        .layer(DefaultBodyLimit::max(64 * 1024)) // 64KB for reshare requests with attestation
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state);
 
     let port_num: u16 = port.parse().unwrap_or_else(|_| {
         eprintln!("invalid port number: {port}");
         std::process::exit(1);
     });
-    // port_num is used by vsock_server on Linux; suppress warning on other platforms
     let _ = port_num;
     let bind_addr = format!("0.0.0.0:{port}");
 
-    // If --tcp flag is set, OR if not on Linux, use TCP.
-    // Otherwise, use vsock (Nitro Enclave default).
     let use_tcp = tcp_mode || !cfg!(target_os = "linux");
 
-    // Determine whether to serve plain HTTP or HTTPS (with optional mTLS)
+    info!("node booted — waiting for POST /configure");
+
     match (tls_cert, tls_key) {
         (Some(cert_path), Some(key_path)) => {
-            // -- TLS mode --
             use axum_server::tls_rustls::RustlsConfig;
             use rustls::server::WebPkiClientVerifier;
             use rustls::RootCertStore;
 
             let mut rustls_config = if let Some(ca_path) = &client_ca {
-                // mTLS: require client certificates signed by this CA
                 let ca_pem = std::fs::read(ca_path)
                     .unwrap_or_else(|e| panic!("failed to read client CA {ca_path}: {e}"));
                 let mut ca_reader = BufReader::new(ca_pem.as_slice());
@@ -436,16 +318,13 @@ async fn main() {
 
                 let mut root_store = RootCertStore::empty();
                 for cert in ca_certs {
-                    root_store
-                        .add(cert)
-                        .expect("failed to add CA cert to root store");
+                    root_store.add(cert).expect("failed to add CA cert");
                 }
 
                 let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
                     .build()
-                    .expect("failed to build client certificate verifier");
+                    .expect("failed to build client verifier");
 
-                // Load server cert chain and key
                 let cert_pem = std::fs::read(&cert_path)
                     .unwrap_or_else(|e| panic!("failed to read TLS cert {cert_path}: {e}"));
                 let key_pem = std::fs::read(&key_path)
@@ -457,14 +336,13 @@ async fn main() {
                 let private_key =
                     rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
                         .expect("failed to parse server private key PEM")
-                        .expect("no private key found in PEM file");
+                        .expect("no private key found");
 
                 rustls::ServerConfig::builder()
                     .with_client_cert_verifier(client_verifier)
                     .with_single_cert(certs, private_key)
                     .expect("failed to build rustls ServerConfig")
             } else {
-                // TLS without client auth
                 let cert_pem = std::fs::read(&cert_path)
                     .unwrap_or_else(|e| panic!("failed to read TLS cert {cert_path}: {e}"));
                 let key_pem = std::fs::read(&key_path)
@@ -476,7 +354,7 @@ async fn main() {
                 let private_key =
                     rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
                         .expect("failed to parse server private key PEM")
-                        .expect("no private key found in PEM file");
+                        .expect("no private key found");
 
                 rustls::ServerConfig::builder()
                     .with_no_client_auth()
@@ -485,38 +363,23 @@ async fn main() {
             };
 
             rustls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
             let tls_config = RustlsConfig::from_config(Arc::new(rustls_config));
-            let addr: SocketAddr = bind_addr
-                .parse()
-                .unwrap_or_else(|e| panic!("invalid bind address {bind_addr}: {e}"));
-
-            if client_ca.is_some() {
-                info!(addr = %bind_addr, "starting toprf-node with mTLS (waiting for key)");
-            } else {
-                info!(addr = %bind_addr, "starting toprf-node with TLS (waiting for key)");
-            }
+            let addr: SocketAddr = bind_addr.parse().unwrap();
 
             axum_server::bind_rustls(addr, tls_config)
                 .serve(app.into_make_service())
                 .await
-                .unwrap_or_else(|e| error!("server error: {e}"));
+                .unwrap_or_else(|e| tracing::error!("server error: {e}"));
         }
         (None, None) if use_tcp => {
-            // -- Plain HTTP/TCP mode (local dev / --tcp flag) --
-            warn!(addr = %bind_addr, "starting WITHOUT TLS on 0.0.0.0:{port} — not recommended for production");
-
-            let listener = TcpListener::bind(&bind_addr)
-                .await
-                .unwrap_or_else(|e| panic!("failed to bind to {bind_addr}: {e}"));
-
+            warn!(addr = %bind_addr, "starting on TCP (dev/test)");
+            let listener = TcpListener::bind(&bind_addr).await.unwrap();
             axum::serve(listener, app)
                 .await
-                .unwrap_or_else(|e| error!("server error: {e}"));
+                .unwrap_or_else(|e| tracing::error!("server error: {e}"));
         }
         #[cfg(target_os = "linux")]
         (None, None) => {
-            // -- vsock mode (Nitro Enclave default on Linux) --
             vsock_server::serve(app, port_num).await;
         }
         #[cfg(not(target_os = "linux"))]

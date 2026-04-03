@@ -38,10 +38,7 @@ pub struct JoinInfoResponse {
 pub async fn join_info_handler(
     State(state): State<Arc<NodeState>>,
 ) -> Result<Json<JoinInfoResponse>, (StatusCode, String)> {
-    let (_, pubkey) = state
-        .join_keypair
-        .as_ref()
-        .ok_or((StatusCode::NOT_FOUND, "not in join mode".to_string()))?;
+    let (_, pubkey) = &state.join_keypair;
     Ok(Json(JoinInfoResponse {
         ephemeral_pubkey: hex::encode(pubkey.as_bytes()),
     }))
@@ -132,13 +129,7 @@ pub async fn reshare_receive_handler(
     for contribution in &req.contributions {
         let scalar = if contribution.encrypted {
             // ECIES-encrypted: decrypt using join keypair
-            let (secret, _) = state.join_keypair.as_ref().ok_or_else(|| {
-                warn!("reshare/receive: encrypted contribution but no join keypair");
-                (
-                    StatusCode::BAD_REQUEST,
-                    "encrypted contribution received but node has no join keypair".to_string(),
-                )
-            })?;
+            let secret = &state.join_keypair.0;
             let ciphertext = base64::engine::general_purpose::STANDARD
                 .decode(&contribution.sub_share_data)
                 .map_err(|e| {

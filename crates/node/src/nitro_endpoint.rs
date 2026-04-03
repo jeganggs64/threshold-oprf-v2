@@ -51,25 +51,8 @@ pub async fn nitro_attestation_handler(
     }
 
     // Build user_data: SHA-256(ephemeral X25519 pubkey) for key binding.
-    // If the node has a join keypair, bind to that. Otherwise bind to
-    // a hash of the node's identity (binary_hash + vShare + gpk).
-    let user_data = if let Some((_, pubkey)) = &state.join_keypair {
-        let hash = Sha256::digest(pubkey.as_bytes());
-        hash.to_vec()
-    } else if let Some(loaded) = state.loaded_key.get() {
-        let identity_input = format!(
-            "{}{}{}",
-            state.binary_hash.as_deref().unwrap_or("unknown"),
-            loaded.verification_share,
-            loaded.group_public_key
-        );
-        Sha256::digest(identity_input.as_bytes()).to_vec()
-    } else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no key or join keypair available".to_string(),
-        ));
-    };
+    let (_, pubkey) = &state.join_keypair;
+    let user_data = Sha256::digest(pubkey.as_bytes()).to_vec();
 
     // Request attestation from NSM device
     let document = request_nsm_attestation(&user_data, &nonce_bytes).map_err(|e| {

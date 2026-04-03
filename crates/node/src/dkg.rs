@@ -116,10 +116,12 @@ fn require_dkg_state(
             "DKG already completed — key is sealed",
         ));
     }
-    state
-        .dkg_state
-        .as_ref()
-        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "node is not in genesis mode"))
+    state.dkg_state.get().ok_or_else(|| {
+        error_response(
+            StatusCode::NOT_FOUND,
+            "node is not in genesis mode — send POST /configure first",
+        )
+    })
 }
 
 // -- Handlers --

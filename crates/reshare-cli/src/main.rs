@@ -229,8 +229,25 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
         println!("  {} (id={}) — ready", node.url, resp.node_id.unwrap_or(0));
     }
 
-    // 3. Get new node's join info (ephemeral pubkey)
-    println!("[3/7] Fetching join info from new node {new_node_url}");
+    // 3. Configure new node in join mode (if not already configured)
+    println!("[3/8] Configuring new node in join mode");
+    let configure_resp = client
+        .post(format!("{new_node_url}/configure"))
+        .json(&serde_json::json!({"mode": "join"}))
+        .send()
+        .await
+        .map_err(|e| format!("failed to configure new node: {e}"))?;
+    if configure_resp.status().is_success() {
+        println!("  Configured for join mode");
+    } else if configure_resp.status().as_u16() == 403 {
+        println!("  Already configured (continuing)");
+    } else {
+        let body = configure_resp.text().await.unwrap_or_default();
+        return Err(format!("configure failed: {body}"));
+    }
+
+    // 4. Get new node's join info (ephemeral pubkey)
+    println!("[4/8] Fetching join info from new node {new_node_url}");
     let join_info: JoinInfoResponse = client
         .get(format!("{new_node_url}/join-info"))
         .send()
@@ -245,7 +262,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
     );
 
     // 4. Get new node's attestation document
-    println!("[4/7] Fetching attestation from new node");
+    println!("[5/8] Fetching attestation from new node");
     let nonce = generate_nonce();
     let att_resp = client
         .get(format!("{new_node_url}/attestation?nonce={nonce}"))
@@ -275,7 +292,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
     );
 
     // 5. Send reshare request to each existing node
-    println!("[5/7] Requesting reshare contributions from existing nodes");
+    println!("[6/8] Requesting reshare contributions from existing nodes");
     let mut contributions: Vec<Contribution> = Vec::new();
 
     for node in &existing_nodes {
@@ -325,7 +342,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
 
     // 6. Deliver contributions to the new node
     println!(
-        "[6/7] Delivering {} contributions to new node",
+        "[7/8] Delivering {} contributions to new node",
         contributions.len()
     );
     let receive_req = ReshareReceiveRequest {
@@ -365,7 +382,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
     );
 
     // 7. Verify the new node is operational
-    println!("[7/7] Verifying new node is operational");
+    println!("[8/8] Verifying new node is operational");
     let health: HealthResponse = client
         .get(format!("{new_node_url}/health"))
         .send()
