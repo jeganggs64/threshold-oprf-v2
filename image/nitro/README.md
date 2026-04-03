@@ -3,13 +3,15 @@
 ## Architecture
 
 ```
-Internet -> Parent EC2 (TCP:3001, socat proxy) -> vsock -> Nitro Enclave (toprf-node)
+Inbound:  Internet -> TCP:3001 -> socat (parent) -> vsock -> Enclave
+Outbound: Enclave -> vsock -> vsock-proxy (parent) -> internet (TLS end-to-end)
 ```
 
-- Parent: runs Amazon Linux, has SSH, runs socat TCP-to-vsock proxy
-- Enclave: runs Alpine + toprf-node binary, NO SSH, NO network, vsock only
+- Parent: runs Amazon Linux, has SSH, runs socat (inbound) + vsock-proxy (outbound)
+- Enclave: runs Alpine + toprf-node binary, NO SSH, NO network interfaces, vsock only
 - Parent CANNOT access enclave memory (Nitro hypervisor isolation)
-- Enclave has NO internet access — well-known config fetch at boot will fail (expected)
+- Outbound TLS is end-to-end (enclave to remote server) — parent is a dumb relay
+- vsock-proxy allowlist restricts outbound to AWS, Google, and ruonlabs.com
 
 ## Image
 
@@ -214,8 +216,26 @@ sudo nitro-cli run-enclave \
     --memory 256 \
     --enclave-cid 16
 
-# Start socat proxy
+# Inbound proxy: clients reach the enclave via TCP:3001
 nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
+
+# Outbound proxies: enclave reaches external services via vsock-proxy
+# Configure the allowlist first:
+sudo tee /etc/nitro_enclaves/vsock-proxy.yaml > /dev/null <<EOF
+allowlist:
+- {address: 169.254.169.254, port: 80}
+- {address: sts.amazonaws.com, port: 443}
+- {address: sts.googleapis.com, port: 443}
+- {address: playintegrity.googleapis.com, port: 443}
+- {address: ruonlabs.com, port: 443}
+- {address: iamcredentials.googleapis.com, port: 443}
+EOF
+
+nohup vsock-proxy 8080 169.254.169.254 80 > ~/proxy-metadata.log 2>&1 &
+nohup vsock-proxy 8443 sts.googleapis.com 443 > ~/proxy-sts.log 2>&1 &
+nohup vsock-proxy 8444 playintegrity.googleapis.com 443 > ~/proxy-play.log 2>&1 &
+nohup vsock-proxy 8445 ruonlabs.com 443 > ~/proxy-wellknown.log 2>&1 &
+nohup vsock-proxy 8446 iamcredentials.googleapis.com 443 > ~/proxy-iam.log 2>&1 &
 
 # Wait ~10s for boot, then verify
 sleep 10
@@ -260,8 +280,8 @@ cat ~/proxy.log
 2. **socat not installed** — Amazon Linux does not have socat by default.
    Install it explicitly or the proxy won't start.
 
-3. **Health check fails immediately after launch** — The enclave takes ~10
-   seconds to boot (well-known config fetch times out). Wait before checking.
+3. **Health check fails immediately after launch** — The enclave takes a few
+   seconds to boot and fetch the well-known config. Wait before checking.
 
 4. **c8a.large (2 vCPU) doesn't work** — The Nitro allocator can't isolate
    CPUs with only 2 vCPUs. Use c5a.xlarge (4 vCPU) or larger.
@@ -272,18 +292,29 @@ cat ~/proxy.log
 6. **Genesis images have different PCRs** — Each node's init.sh differs, so
    PCR0 differs per node. After DKG, switch to the standard join-mode image.
 
-7. **DKG CLI is a Linux binary** — Built with musl for Linux x86_64. Run it
-   from an EC2 instance, not from macOS.
+7. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
+   enclave restarts, the DKG key share is lost. Use resharing to restore.
 
-8. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
-   enclave restarts, the DKG key share is lost.
+8. **No localhost in enclaves** — Nitro enclaves have no network interfaces at
+   all, not even 127.0.0.1. The binary uses AF_VSOCK directly for outbound
+   connections (not TCP localhost bridges).
 
-## Why socat?
+## Why socat + vsock-proxy?
 
-Nitro Enclaves have zero network access. The only communication channel is
-vsock between the parent EC2 and the enclave. socat bridges TCP:3001 on
-the parent to vsock CID 16 port 3001 in the enclave. It is NOT pre-installed
-on Amazon Linux.
+Nitro Enclaves have zero network interfaces. The only communication is vsock.
+
+**Inbound** (clients reaching the enclave): `socat` on the parent bridges
+TCP:3001 to vsock CID 16 port 3001. socat is NOT pre-installed on Amazon
+Linux — install it with `dnf install socat`.
+
+**Outbound** (enclave reaching the internet): `vsock-proxy` on the parent
+listens on vsock ports and forwards to specific TCP endpoints. The enclave
+connects via AF_VSOCK to CID 3 (parent), does TLS end-to-end with the
+remote server (rustls inside the enclave). The parent's vsock-proxy is a
+dumb byte relay — it cannot read or modify the encrypted traffic.
+
+The vsock-proxy allowlist (`/etc/nitro_enclaves/vsock-proxy.yaml`) restricts
+which hosts the enclave can reach: AWS metadata, Google APIs, and ruonlabs.com.
 
 ## Why Alpine?
 
