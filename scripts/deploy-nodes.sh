@@ -39,7 +39,6 @@ TOPRF_INSTANCE_TYPE="${TOPRF_INSTANCE_TYPE:-c5a.xlarge}"
 TOPRF_MODE="${TOPRF_MODE:-genesis}"
 TOPRF_THRESHOLD="${TOPRF_THRESHOLD:-2}"
 TOPRF_TOTAL="${TOPRF_TOTAL:-3}"
-TOPRF_CLI_DIR="${TOPRF_CLI_DIR:-}"
 
 # Parse regions into array
 IFS=',' read -ra REGIONS <<< "$TOPRF_REGIONS"
@@ -254,16 +253,6 @@ AEOF
         "$TOPRF_IMAGE_DIR/toprf-node" \
         ec2-user@"$ip":~
 
-    # Upload CLI binaries if specified
-    if [[ -n "$TOPRF_CLI_DIR" && -d "$TOPRF_CLI_DIR" ]]; then
-        scp -q -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" \
-            "$TOPRF_CLI_DIR"/toprf-dkg-cli \
-            "$TOPRF_CLI_DIR"/toprf-reshare-cli \
-            ec2-user@"$ip":~ 2>/dev/null || true
-        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" \
-            "chmod +x ~/toprf-dkg-cli ~/toprf-reshare-cli 2>/dev/null" || true
-    fi
-
     # Step 6: Load image, build EIF
     if [[ "$TOPRF_MODE" == "genesis" ]]; then
         # Genesis: create per-node init.sh
@@ -382,15 +371,14 @@ done
 echo ""
 echo "SSH key: $SSH_KEY_FILE"
 echo ""
-echo "For run-dkg.env:"
-echo "  TOPRF_NODE_URLS=\"$NODE_URLS\""
-echo "  TOPRF_DKG_HOST=\"${IP_LIST[0]}\""
-echo "  TOPRF_KEY_NAME=\"$TOPRF_KEY_NAME\""
-echo ""
 
 if [[ "$TOPRF_MODE" == "genesis" ]]; then
-    echo "Next: configure scripts/run-dkg.env and run: bash scripts/run-dkg.sh"
+    echo "Next: run DKG from your local machine:"
+    echo "  cd $(pwd)"
+    echo "  ./toprf-dkg-cli init --nodes $NODE_URLS"
+    echo ""
+    echo "Make sure .env has DEPLOYER_PRIVATE_KEY and RPC_URL for on-chain deployment."
 else
     echo "Next: update well-known config with new node, then run:"
-    echo "  toprf-reshare-cli --new-node http://${IP_LIST[0]}:3001"
+    echo "  ./toprf-reshare-cli --new-node http://${IP_LIST[0]}:3001"
 fi
