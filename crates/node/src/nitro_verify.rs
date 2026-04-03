@@ -83,6 +83,33 @@ pub fn verify(document: &[u8]) -> Result<VerifiedAttestation, String> {
     })
 }
 
+/// Check that the attestation document is recent (within 5 minutes).
+pub fn check_freshness(attestation: &VerifiedAttestation) -> Result<(), String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let age_ms = now_ms.saturating_sub(attestation.timestamp);
+    let max_age_ms = 5 * 60 * 1000; // 5 minutes
+
+    if age_ms > max_age_ms {
+        return Err(format!(
+            "attestation document is too old: {}s (max {}s)",
+            age_ms / 1000,
+            max_age_ms / 1000
+        ));
+    }
+
+    // Also reject future timestamps (clock skew tolerance: 30s)
+    if attestation.timestamp > now_ms + 30_000 {
+        return Err("attestation document has a future timestamp".into());
+    }
+
+    Ok(())
+}
+
 /// Check that the verified PCR values match the expected measurements.
 pub fn check_pcrs(
     attestation: &VerifiedAttestation,
@@ -304,12 +331,19 @@ fn verify_cert_chain(signing_cert_der: &[u8], cabundle: &[Vec<u8>]) -> Result<()
     }
 
     // Walk the chain: signing_cert -> intermediates -> root
-    // Verify signing cert is signed by the first intermediate (or root if no intermediates)
+    // Verify signatures and certificate validity
     let chain: Vec<&X509Certificate> = std::iter::once(&signing_cert)
         .chain(intermediates.iter())
         .collect();
 
     for i in 0..chain.len() {
+        // Check certificate is within its validity period
+        if !chain[i].validity().is_valid() {
+            return Err(format!(
+                "certificate at depth {i} has expired or is not yet valid"
+            ));
+        }
+
         let issuer = if i + 1 < chain.len() {
             chain[i + 1]
         } else {

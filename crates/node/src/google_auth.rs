@@ -12,7 +12,11 @@
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::sync::Mutex;
 use tracing::info;
+
+/// Cached Google access token with expiry. Avoids 4 HTTP round-trips per request.
+static CACHED_TOKEN: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
 
 // -- WIF Configuration (hardcoded — these are identifiers, not secrets) --
 
@@ -234,16 +238,48 @@ async fn exchange_for_google_token(
 /// Get a Google access token for calling the Play Integrity API.
 ///
 /// Uses AWS Workload Identity Federation: fetches AWS credentials from
-/// instance metadata, signs a GetCallerIdentity request, exchanges it
-/// for a Google access token via STS, then impersonates the service account.
+/// instance metadata (via separate metadata client routed through vsock),
+/// signs a GetCallerIdentity request, exchanges it for a Google access
+/// token via STS, then impersonates the service account.
 pub async fn get_google_access_token(client: &Client) -> Result<String, String> {
+    // Check cached token first
+    {
+        let cache = CACHED_TOKEN.lock().unwrap();
+        if let Some((ref token, expiry)) = *cache {
+            // Reuse if more than 60 seconds until expiry
+            if expiry > std::time::Instant::now() + std::time::Duration::from_secs(60) {
+                return Ok(token.clone());
+            }
+        }
+    }
+
     info!("fetching Google access token via WIF");
 
-    let aws_creds = fetch_aws_credentials(client).await?;
+    // Use a dedicated metadata client for IMDS (routes 169.254.169.254 through vsock)
+    #[cfg(target_os = "linux")]
+    let metadata_client = crate::outbound_proxy::build_metadata_client()
+        .map_err(|e| format!("metadata client build failed: {e}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let metadata_client = Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("metadata client build failed: {e}"))?;
+
+    let aws_creds = fetch_aws_credentials(&metadata_client).await?;
     let subject_token = generate_aws_subject_token(&aws_creds)?;
     let google_token = exchange_for_google_token(client, &subject_token).await?;
 
     info!("Google access token obtained");
+
+    // Cache for 55 minutes (tokens typically last 1 hour)
+    {
+        let mut cache = CACHED_TOKEN.lock().unwrap();
+        *cache = Some((
+            google_token.clone(),
+            std::time::Instant::now() + std::time::Duration::from_secs(55 * 60),
+        ));
+    }
+
     Ok(google_token)
 }
 

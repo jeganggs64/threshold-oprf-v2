@@ -306,6 +306,12 @@ fn verify_nitro_attestation(
         (StatusCode::FORBIDDEN, e).into_response()
     })?;
 
+    // Check attestation is recent (within 5 minutes)
+    crate::nitro_verify::check_freshness(&attestation).map_err(|e| {
+        warn!("reshare: {e}");
+        (StatusCode::FORBIDDEN, e).into_response()
+    })?;
+
     // Check PCR values against expected measurements from well-known config
     let measurements = node_entry.measurements.as_ref().ok_or_else(|| {
         warn!("reshare: no measurements in well-known config for target node");

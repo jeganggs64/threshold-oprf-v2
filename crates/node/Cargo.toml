@@ -34,6 +34,7 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower = "0.5"
 ciborium = { workspace = true }
+p256 = { workspace = true }
 p384 = { workspace = true }
 x509-parser = { workspace = true }
 pem = { workspace = true }

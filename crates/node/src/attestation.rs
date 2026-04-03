@@ -5,6 +5,7 @@
 //! with every request. A `device_id_hash` is derived from the attestation
 //! material and used for per-device rate limiting.
 
+use base64::Engine;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::warn;
@@ -112,7 +113,6 @@ fn verify_ios(
     }
 
     // Decode attestation object (base64 -> CBOR)
-    use base64::Engine;
     let att_bytes = base64::engine::general_purpose::STANDARD
         .decode(attestation_b64)
         .map_err(|e| AttestationError::Invalid(format!("attestation_object base64: {e}")))?;
@@ -171,7 +171,14 @@ fn verify_ios(
     let (_, leaf_cert) = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|e| AttestationError::Invalid(format!("leaf cert parse: {e}")))?;
 
-    // If there's an intermediate cert, verify chain: leaf -> intermediate -> root
+    // Verify certificate validity periods
+    if !leaf_cert.validity().is_valid() {
+        return Err(AttestationError::Invalid(
+            "leaf certificate has expired or is not yet valid".into(),
+        ));
+    }
+
+    // Verify certificate chain signatures: leaf -> intermediate -> root
     if x5c.len() >= 2 {
         let intermediate_der = match &x5c[1] {
             ciborium::Value::Bytes(b) => b,
@@ -179,6 +186,12 @@ fn verify_ios(
         };
         let (_, intermediate_cert) = x509_parser::parse_x509_certificate(intermediate_der)
             .map_err(|e| AttestationError::Invalid(format!("intermediate cert: {e}")))?;
+
+        if !intermediate_cert.validity().is_valid() {
+            return Err(AttestationError::Invalid(
+                "intermediate certificate has expired or is not yet valid".into(),
+            ));
+        }
 
         leaf_cert
             .verify_signature(Some(intermediate_cert.public_key()))
@@ -226,12 +239,37 @@ fn verify_ios(
         ));
     }
 
-    // Parse the COSE public key (CBOR map)
-    let _cred_pub_key: ciborium::Value =
-        ciborium::from_reader(&auth_data[cred_pub_key_offset..])
-            .map_err(|e| AttestationError::Invalid(format!("credential public key CBOR: {e}")))?;
+    // Parse the COSE public key from authData (EC P-256)
+    // COSE key map uses integer keys: 1=kty, -1=crv, -2=x, -3=y
+    let cred_pub_key: ciborium::Value = ciborium::from_reader(&auth_data[cred_pub_key_offset..])
+        .map_err(|e| AttestationError::Invalid(format!("credential public key CBOR: {e}")))?;
 
-    // Verify the assertion signature
+    let cose_map = match &cred_pub_key {
+        ciborium::Value::Map(m) => m,
+        _ => return Err(AttestationError::Invalid("COSE key is not a map".into())),
+    };
+
+    // Extract x (-2) and y (-3) coordinates
+    let x_bytes = cose_map_get_bytes(cose_map, -2)
+        .ok_or_else(|| AttestationError::Invalid("missing x coordinate in COSE key".into()))?;
+    let y_bytes = cose_map_get_bytes(cose_map, -3)
+        .ok_or_else(|| AttestationError::Invalid("missing y coordinate in COSE key".into()))?;
+
+    if x_bytes.len() != 32 || y_bytes.len() != 32 {
+        return Err(AttestationError::Invalid(
+            "COSE key coordinates must be 32 bytes each".into(),
+        ));
+    }
+
+    // Build uncompressed P-256 public key: 0x04 || x || y
+    let mut pub_key_uncompressed = vec![0x04u8];
+    pub_key_uncompressed.extend_from_slice(&x_bytes);
+    pub_key_uncompressed.extend_from_slice(&y_bytes);
+
+    let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&pub_key_uncompressed)
+        .map_err(|e| AttestationError::Invalid(format!("invalid P-256 public key: {e}")))?;
+
+    // Decode and verify the assertion
     let assertion_bytes = base64::engine::general_purpose::STANDARD
         .decode(assertion_b64)
         .map_err(|e| AttestationError::Invalid(format!("assertion base64: {e}")))?;
@@ -248,7 +286,7 @@ fn verify_ios(
         }
     };
 
-    let _assertion_signature = cbor_map_get_bytes(&assertion_map, "signature")
+    let assertion_signature = cbor_map_get_bytes(&assertion_map, "signature")
         .ok_or_else(|| AttestationError::Invalid("missing signature in assertion".into()))?;
 
     let assertion_auth_data =
@@ -268,16 +306,24 @@ fn verify_ios(
         ));
     }
 
-    // Verify the assertion signature: verify(authenticatorData || clientDataHash)
-    // using the credential public key extracted from the attestation
-    // TODO: Extract EC P-256 key from COSE key map and verify ECDSA signature
-    // For now, we verify the cert chain (which proves the device is genuine)
-    // and derive the device ID from the credential certificate's public key.
-    // Full assertion signature verification will be added in a follow-up.
+    // Verify assertion signature: ECDSA-P256 over SHA256(authenticatorData || clientDataHash)
+    let mut signed_data = Vec::with_capacity(assertion_auth_data.len() + 32);
+    signed_data.extend_from_slice(&assertion_auth_data);
+    signed_data.extend_from_slice(expected_client_data_hash);
+    let composite_hash = Sha256::digest(&signed_data);
 
-    // Device ID: SHA256 of the leaf certificate's public key (stable per device)
-    let leaf_pk = leaf_cert.public_key().subject_public_key.data.as_ref();
-    let device_id_hash: [u8; 32] = Sha256::digest(leaf_pk).into();
+    let signature = p256::ecdsa::DerSignature::from_bytes(&assertion_signature)
+        .map_err(|e| AttestationError::Invalid(format!("invalid assertion signature DER: {e}")))?;
+
+    use p256::ecdsa::signature::Verifier;
+    verifying_key
+        .verify(&composite_hash, &signature)
+        .map_err(|e| {
+            AttestationError::Invalid(format!("assertion signature verification failed: {e}"))
+        })?;
+
+    // Device ID: SHA256 of the credential public key (stable per device)
+    let device_id_hash: [u8; 32] = Sha256::digest(&pub_key_uncompressed).into();
 
     Ok(AttestationResult { device_id_hash })
 }
@@ -381,7 +427,6 @@ async fn verify_android(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    use base64::Engine;
     let expected_nonce =
         base64::engine::general_purpose::STANDARD.encode(expected_client_data_hash);
     if nonce != expected_nonce {
@@ -393,15 +438,33 @@ async fn verify_android(
         return Err(AttestationError::ClientDataHashMismatch);
     }
 
-    // Device ID: SHA256 of the integrity token (stable per-request, rate limiter
-    // groups by this hash). For a more stable device ID, we could use the
-    // device recognition verdict + a device-specific claim if Google provides one.
+    // TODO(android-device-id): The integrity token is unique per request, so this
+    // device_id_hash is per-request — rate limiting won't group requests by device.
+    // Fix: the app should include a stable `device_id` field (install UUID from
+    // secure storage) in the attestation payload, and the nonce should be
+    // SHA256(client_data_hash || device_id) so the device_id is bound to the
+    // integrity token and can't be swapped. Play Integrity proves the device is
+    // genuine, so the self-reported device_id is trustworthy.
+    // Until this is implemented, Android rate limiting is per-request.
     let device_id_hash: [u8; 32] = Sha256::digest(integrity_token.as_bytes()).into();
 
     Ok(AttestationResult { device_id_hash })
 }
 
 // -- CBOR helpers ----------------------------------------------------------
+
+/// Get bytes from a CBOR map with an integer key (for COSE key maps).
+fn cose_map_get_bytes(map: &[(ciborium::Value, ciborium::Value)], key: i64) -> Option<Vec<u8>> {
+    let target = ciborium::Value::Integer(key.into());
+    for (k, v) in map {
+        if k == &target {
+            if let ciborium::Value::Bytes(b) = v {
+                return Some(b.clone());
+            }
+        }
+    }
+    None
+}
 
 fn cbor_map_get_bytes(map: &[(ciborium::Value, ciborium::Value)], key: &str) -> Option<Vec<u8>> {
     for (k, v) in map {
