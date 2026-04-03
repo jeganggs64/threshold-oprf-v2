@@ -306,13 +306,13 @@ DEOF
         nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
 
         # Outbound proxies: vsock -> internet (enclave reaches external services)
-        # The enclave's binary bridges TCP 127.0.0.1:<port> -> vsock CID 3:<port>
-        # These vsock-proxy instances forward vsock connections to the real endpoints
-        nohup vsock-proxy 8080 169.254.169.254 80 > ~/proxy-metadata.log 2>&1 &
-        nohup vsock-proxy 8443 sts.googleapis.com 443 > ~/proxy-google-sts.log 2>&1 &
-        nohup vsock-proxy 8444 playintegrity.googleapis.com 443 > ~/proxy-play-integrity.log 2>&1 &
-        nohup vsock-proxy 8445 ruonlabs.com 443 > ~/proxy-well-known.log 2>&1 &
-        nohup vsock-proxy 8446 iamcredentials.googleapis.com 443 > ~/proxy-google-iam.log 2>&1 &
+        # Uses socat (no allowlist needed). TLS is end-to-end, parent can't MITM.
+        # 169.254.169.254 = AWS instance metadata (fixed IP, used for WIF credentials)
+        nohup socat VSOCK-LISTEN:8080,fork TCP:169.254.169.254:80 > ~/proxy-metadata.log 2>&1 &
+        nohup socat VSOCK-LISTEN:8443,fork TCP:sts.googleapis.com:443 > ~/proxy-sts.log 2>&1 &
+        nohup socat VSOCK-LISTEN:8444,fork TCP:playintegrity.googleapis.com:443 > ~/proxy-play.log 2>&1 &
+        nohup socat VSOCK-LISTEN:8445,fork TCP:ruonlabs.com:443 > ~/proxy-wellknown.log 2>&1 &
+        nohup socat VSOCK-LISTEN:8446,fork TCP:iamcredentials.googleapis.com:443 > ~/proxy-iam.log 2>&1 &
     " 2>&1 || true
 
     # Wait for enclave to boot (~10s for well-known timeout + startup)
@@ -332,16 +332,18 @@ DEOF
     if [[ -n "$health" ]]; then
         echo "[${region}] Node $node_id deployed at $ip: $health"
     else
-        # SSH back in to start socat + vsock-proxy (may not have started if SSH dropped)
+        # SSH back in to start proxies (may not have started if SSH dropped)
         echo "[${region}] Reconnecting to start proxies..."
         ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
-            pgrep socat > /dev/null || nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
-            pgrep vsock-proxy > /dev/null || {
-                nohup vsock-proxy 8080 169.254.169.254 80 > ~/proxy-metadata.log 2>&1 &
-                nohup vsock-proxy 8443 sts.googleapis.com 443 > ~/proxy-google-sts.log 2>&1 &
-                nohup vsock-proxy 8444 playintegrity.googleapis.com 443 > ~/proxy-play-integrity.log 2>&1 &
-                nohup vsock-proxy 8445 ruonlabs.com 443 > ~/proxy-well-known.log 2>&1 &
-                nohup vsock-proxy 8446 iamcredentials.googleapis.com 443 > ~/proxy-google-iam.log 2>&1 &
+            # Inbound
+            pgrep -f 'VSOCK-CONNECT:16:3001' > /dev/null || nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
+            # Outbound
+            pgrep -f 'VSOCK-LISTEN:8445' > /dev/null || {
+                nohup socat VSOCK-LISTEN:8080,fork TCP:169.254.169.254:80 > ~/proxy-metadata.log 2>&1 &
+                nohup socat VSOCK-LISTEN:8443,fork TCP:sts.googleapis.com:443 > ~/proxy-sts.log 2>&1 &
+                nohup socat VSOCK-LISTEN:8444,fork TCP:playintegrity.googleapis.com:443 > ~/proxy-play.log 2>&1 &
+                nohup socat VSOCK-LISTEN:8445,fork TCP:ruonlabs.com:443 > ~/proxy-wellknown.log 2>&1 &
+                nohup socat VSOCK-LISTEN:8446,fork TCP:iamcredentials.googleapis.com:443 > ~/proxy-iam.log 2>&1 &
             }
         " 2>&1 || true
         sleep 15
