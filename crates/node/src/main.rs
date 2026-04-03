@@ -251,7 +251,7 @@ async fn main() {
         loaded_key: OnceLock::new(),
         reshare_seen: std::sync::Mutex::new(Vec::with_capacity(64)),
         binary_hash,
-        rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
+        rate_limiter: rate_limit::RateLimiter::new(10, std::time::Duration::from_secs(86400)),
         data_dir,
         join_in_progress: std::sync::Mutex::new(()),
         join_keypair: (secret, pubkey),
