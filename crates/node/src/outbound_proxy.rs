@@ -12,6 +12,7 @@
 //!
 //! On non-Linux (dev/test), uses standard reqwest with direct TCP.
 
+#[cfg(not(target_os = "linux"))]
 use reqwest::Client;
 use tracing::info;
 
