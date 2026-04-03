@@ -322,9 +322,10 @@ fn verify_cert_chain(signing_cert_der: &[u8], cabundle: &[Vec<u8>]) -> Result<()
     let (_, signing_cert) = X509Certificate::from_der(signing_cert_der)
         .map_err(|e| format!("failed to parse signing certificate: {e}"))?;
 
-    // Parse all cabundle certs
+    // Parse all cabundle certs. Nitro orders them root-to-leaf,
+    // so we reverse to get leaf-to-root for chain walking.
     let mut intermediates: Vec<X509Certificate> = Vec::with_capacity(cabundle.len());
-    for (i, cert_der) in cabundle.iter().enumerate() {
+    for (i, cert_der) in cabundle.iter().rev().enumerate() {
         let (_, cert) = X509Certificate::from_der(cert_der)
             .map_err(|e| format!("failed to parse cabundle cert {i}: {e}"))?;
         intermediates.push(cert);
