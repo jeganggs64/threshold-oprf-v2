@@ -19,14 +19,14 @@ How to independently verify that TOPRF nodes run the correct code and hold legit
 
 ## Step 1: Get the build record
 
-Check the on-chain registry contract on Base for the commit hash and group public key. Or check the `deployments/builds/` directory in the repo for the build record:
+Check the `deployments/builds/` directory in the repo for build records (auto-committed by CI):
 
 ```bash
-# Example: deployments/builds/nitro-c74340ba.json
 cat deployments/builds/nitro-*.json
 ```
 
 Note the `commit`, `rust_version`, `binary_sha256`, and `cargo_lock_sha256`.
+The on-chain registry contract on Base also records the group public key and verification shares.
 
 ## Step 2: Reproduce the build
 

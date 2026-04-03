@@ -1,21 +1,22 @@
 # Deployment Records
 
-Each subdirectory is a production deployment, containing the exact artifacts used:
+The `builds/` directory contains build provenance records, auto-committed by CI
+after each Nitro image build:
 
 ```
 deployments/
-  2026-04-15/                  ← example deployment date
-    package-lock.json          ← pinned package versions (Azure image)
-    hashes.txt                 ← SHA256 of binary + image
-    pcr-values.json            ← Nitro PCR0/1/2 values (if applicable)
-    notes.md                   ← deployment notes (nodes, regions, etc.)
+  builds/
+    nitro-<commit>.json    ← build provenance (commit, rust version, binary hash, etc.)
 ```
 
 ## How to verify a deployment
 
-1. Check out this repo at the commit tagged for the deployment
-2. Build the image using the lockfile in the deployment directory
-3. Compare hashes — they must match
-4. Compare PCR values against live node attestation — they must match
+See [docs/verification-guide.md](../docs/verification-guide.md) for the full
+step-by-step verification process.
 
-If everything matches, the node is running exactly this code with these dependencies.
+Summary:
+1. Check out the repo at the commit in the build record
+2. Build with the same Rust version
+3. Compare binary SHA256 — must match
+4. Build the Docker image + EIF — PCR values must match
+5. Verify live node attestation — PCR values must match your build

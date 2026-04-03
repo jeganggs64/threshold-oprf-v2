@@ -67,57 +67,42 @@ bash scripts/deploy-nodes.sh
 ```
 
 The script:
-- Creates security groups in each region (if they don't exist)
-- Provisions EC2 instances with Nitro Enclave support
+- Creates security groups and SSH keys (if they don't exist)
+- Provisions EC2 instances with elastic IPs and Nitro Enclave support
 - Installs Nitro CLI, Docker, socat
-- Uploads the image, builds EIF
-- Creates per-node init.sh for genesis mode (or uses default for join mode)
-- Launches enclaves with socat TCP-to-vsock proxy
-- Outputs node IPs and config for the next step
+- Uploads the image, builds EIF (same image for all nodes)
+- Launches enclaves with inbound socat + outbound vsock-proxy
+- Sets up iptables rate limiting (10 conn/min/IP)
+- Outputs node IPs and DKG command
 
 ### 4. Run DKG
 
-```bash
-cp scripts/run-dkg.env.example scripts/run-dkg.env
-# Edit run-dkg.env:
-#   TOPRF_NODE_URLS (from deploy output)
-#   TOPRF_DKG_HOST (from deploy output)
-#   TOPRF_KEY_NAME (must match deploy-nodes.env)
-#   DEPLOYER_PRIVATE_KEY (wallet private key for on-chain registry)
-#   RPC_URL (defaults to Base Sepolia)
+Run the DKG CLI from your local machine (macOS or Linux). It configures
+each node via POST /configure, then runs the FROST DKG ceremony.
 
-bash scripts/run-dkg.sh
+```bash
+# Ensure .env has DEPLOYER_PRIVATE_KEY and RPC_URL for on-chain deployment
+toprf-dkg-cli init --nodes http://<n1>:3001,http://<n2>:3001,http://<n3>:3001
 ```
 
-The script:
-- Verifies all nodes are healthy
-- Uploads deployer credentials to the DKG host
-- Uploads contracts and installs foundry (for on-chain deployment)
-- Runs the DKG ceremony (FROST rounds 1-3)
-- Deploys the TOPRFRegistry contract to Base (if DEPLOYER_PRIVATE_KEY is set)
-- Downloads `dkg-data.json` locally
-- Verifies all nodes are ready after DKG
+The CLI:
+- Sends POST /configure to each node (sets genesis mode, node ID, threshold)
+- Runs FROST DKG rounds 1-3 (CLI is a blind relay, never sees key shares)
+- Deploys TOPRFRegistry contract to Base (if DEPLOYER_PRIVATE_KEY is set in .env)
+- Each node seals its own key share in enclave memory
 
-### 5. Test evaluations
+After DKG, each node's health returns `{"status":"ready","node_id":N}`.
 
-```bash
-BP="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-CDH=$(echo -n "$BP" | xxd -r -p | sha256sum | cut -d' ' -f1)
-
-curl -X POST http://<node-ip>:3001/partial-evaluate \
-    -H "Content-Type: application/json" \
-    -d "{\"blinded_point\": \"$BP\", \"attestation\": {\"platform\": \"test\", \"client_data_hash\": \"$CDH\"}}"
-```
-
-### 6. Resharing (adding a new node)
+### 5. Resharing (adding a new node)
 
 ```bash
-# 1. Deploy a new node in join mode
-#    Set TOPRF_MODE="join" in deploy-nodes.env, run deploy-nodes.sh
+# 1. Deploy a new node (same image — all nodes are identical)
+bash scripts/deploy-nodes.sh
 
-# 2. Update well-known config with the new node's URL, platform, PCR values
+# 2. Update well-known config with the new node's URL, platform, and PCR values
+#    (PCR0, PCR1, PCR2 — same as all other nodes since the image is identical)
 
-# 3. Run reshare CLI (from any machine that can reach all nodes)
+# 3. Run reshare CLI (configures new node in join mode automatically)
 toprf-reshare-cli --new-node http://<new-ip>:3001
 ```
 
@@ -169,43 +154,18 @@ sudo systemctl restart nitro-enclaves-allocator
 ### Upload and build
 
 ```bash
-# Upload image + binary
-scp -i <key> toprf-node-enclave.tar.gz toprf-node ec2-user@<ip>:~
+# Upload image
+scp -i <key> toprf-node-enclave.tar.gz ec2-user@<ip>:~
 
-# Load Docker image
+# Load Docker image and build EIF (same image for all nodes)
 sudo docker load < ~/toprf-node-enclave.tar.gz
-
-# For join mode: use the image as-is
 sudo nitro-cli build-enclave \
     --docker-uri toprf-node-enclave:latest \
     --output-file ~/toprf-node.eif
-
-# For genesis mode: create per-node init.sh (no --tcp!)
-cat > /tmp/init.sh <<'SCRIPT'
-#!/bin/sh
-TOPRF_ALLOW_TEST_ATTESTATION=1 exec /toprf-node \
-    --genesis "http://<peer1-ip>:3001,http://<peer2-ip>:3001" \
-    --node-id 1 \
-    --threshold 2 \
-    --total 3 \
-    --port 3001
-SCRIPT
-chmod +x /tmp/init.sh
-
-cat > /tmp/Dockerfile.genesis <<'EOF'
-FROM toprf-node-enclave:latest
-COPY init.sh /init.sh
-RUN chmod +x /init.sh
-ENTRYPOINT ["/init.sh"]
-CMD []
-EOF
-
-cd /tmp
-sudo docker build -t toprf-node-enclave:genesis -f Dockerfile.genesis .
-sudo nitro-cli build-enclave \
-    --docker-uri toprf-node-enclave:genesis \
-    --output-file ~/toprf-node.eif
 ```
+
+All nodes use the same image — genesis vs join mode is configured at runtime
+via POST /configure from the DKG or reshare CLI.
 
 ### Launch
 
@@ -273,24 +233,27 @@ cat ~/proxy.log
 
 ## Common Pitfalls
 
-1. **`--tcp` flag in init.sh** — Do NOT use `--tcp` inside the enclave. The
-   enclave has no network. The binary defaults to vsock on Linux, which is
-   correct.
+1. **socat not installed** — Amazon Linux does not have socat by default.
+   The deploy script installs it, but if deploying manually, run `sudo dnf install socat`.
 
-2. **socat not installed** — Amazon Linux does not have socat by default.
-   Install it explicitly or the proxy won't start.
-
-3. **Health check fails immediately after launch** — The enclave takes a few
-   seconds to boot and fetch the well-known config. Wait before checking.
-
-4. **c8a.large (2 vCPU) doesn't work** — The Nitro allocator can't isolate
+2. **c8a.large (2 vCPU) doesn't work** — The Nitro allocator can't isolate
    CPUs with only 2 vCPUs. Use c5a.xlarge (4 vCPU) or larger.
 
-5. **Debug mode zeros all PCRs** — Never use `--debug-mode` in production.
+3. **Debug mode zeros all PCRs** — Never use `--debug-mode` in production.
    The reshare handler rejects all-zero PCRs.
 
-6. **Genesis images have different PCRs** — Each node's init.sh differs, so
-   PCR0 differs per node. After DKG, switch to the standard join-mode image.
+4. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
+   enclave restarts, the key share is lost. Use resharing to recover.
+
+5. **No localhost in enclaves** — Nitro enclaves have no network interfaces at
+   all, not even 127.0.0.1. Outbound connections use AF_VSOCK directly.
+
+6. **vsock-proxy must be running** — The outbound proxies (vsock-proxy) on the
+   parent must be started before the enclave can fetch well-known config or
+   call Google APIs. The deploy script handles this.
+
+7. **SSH drops during enclave launch** — The enclave steals CPUs from the parent,
+   which can kill SSH sessions. The deploy script handles this by reconnecting.
 
 7. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
    enclave restarts, the DKG key share is lost. Use resharing to restore.
