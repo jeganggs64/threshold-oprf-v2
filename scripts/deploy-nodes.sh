@@ -169,10 +169,10 @@ for region in "${REGIONS[@]}"; do
     echo "[${region}] Instance: $instance_id"
 done
 
-# ---------- Wait for public IPs ----------
+# ---------- Allocate elastic IPs and associate ----------
 
 echo ""
-echo "=== Waiting for public IPs ==="
+echo "=== Allocating elastic IPs ==="
 
 declare -A NODE_IPS
 declare -a IP_LIST
@@ -180,23 +180,28 @@ declare -a IP_LIST
 sleep 20  # Wait for instances to initialize
 
 for region in "${REGIONS[@]}"; do
-    ip=""
-    for attempt in $(seq 1 12); do
-        ip=$(aws ec2 describe-instances --region "$region" \
-            --instance-ids "${INSTANCE_IDS[$region]}" \
-            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null || echo "None")
-        if [[ "$ip" != "None" && -n "$ip" ]]; then
-            break
-        fi
-        sleep 5
-    done
-    if [[ "$ip" == "None" || -z "$ip" ]]; then
-        echo "Error: Failed to get public IP for ${INSTANCE_IDS[$region]} in $region"
-        exit 1
-    fi
+    # Allocate elastic IP
+    alloc_id=$(aws ec2 allocate-address --region "$region" \
+        --domain vpc \
+        --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=toprf-v2-nitro-${region}}]" \
+        --query 'AllocationId' --output text)
+
+    # Wait for instance to be running
+    aws ec2 wait instance-running --region "$region" --instance-ids "${INSTANCE_IDS[$region]}" 2>/dev/null
+
+    # Associate with instance
+    aws ec2 associate-address --region "$region" \
+        --allocation-id "$alloc_id" \
+        --instance-id "${INSTANCE_IDS[$region]}" > /dev/null
+
+    # Get the elastic IP
+    ip=$(aws ec2 describe-addresses --region "$region" \
+        --allocation-ids "$alloc_id" \
+        --query 'Addresses[0].PublicIp' --output text)
+
     NODE_IPS[$region]=$ip
     IP_LIST+=("$ip")
-    echo "[${region}] IP: $ip"
+    echo "[${region}] Elastic IP: $ip (allocation: $alloc_id)"
 done
 
 # ---------- Wait for SSH ----------
