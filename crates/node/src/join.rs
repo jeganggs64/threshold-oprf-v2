@@ -34,10 +34,28 @@ pub struct JoinInfoResponse {
 
 /// GET /join-info — returns the node's ephemeral X25519 public key.
 ///
-/// Only available when the node was started with --join. Returns 404 otherwise.
+/// Only available after /configure and for 1 hour. Returns 403 after expiry.
 pub async fn join_info_handler(
     State(state): State<Arc<NodeState>>,
 ) -> Result<Json<JoinInfoResponse>, (StatusCode, String)> {
+    // Must be configured
+    if state.configured.get().is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "not configured — send POST /configure first".to_string(),
+        ));
+    }
+
+    // Expires 1 hour after /configure
+    if let Some(configured_at) = state.configured_at.get() {
+        if configured_at.elapsed() > std::time::Duration::from_secs(3600) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "join-info expired (1 hour after configure)".to_string(),
+            ));
+        }
+    }
+
     let (_, pubkey) = &state.join_keypair;
     Ok(Json(JoinInfoResponse {
         ephemeral_pubkey: hex::encode(pubkey.as_bytes()),

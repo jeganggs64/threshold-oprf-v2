@@ -23,6 +23,7 @@ mod configure;
 mod dkg;
 mod evaluate;
 mod google_auth;
+pub mod ip_rate_limit;
 mod join;
 #[cfg(feature = "nitro")]
 mod nitro_endpoint;
@@ -74,6 +75,10 @@ pub struct NodeState {
     pub dkg_state: OnceLock<Arc<dkg::DkgState>>,
     /// Configuration mode — set once via /configure ("genesis" or "join").
     pub configured: OnceLock<String>,
+    /// When /configure was called — used to expire /join-info after 1 hour.
+    pub configured_at: OnceLock<std::time::Instant>,
+    /// Per-route IP-based rate limiters.
+    pub ip_limiters: ip_rate_limit::RateLimiters,
 }
 
 #[allow(dead_code)]
@@ -257,6 +262,8 @@ async fn main() {
         join_keypair: (secret, pubkey),
         dkg_state: OnceLock::new(),
         configured: OnceLock::new(),
+        configured_at: OnceLock::new(),
+        ip_limiters: ip_rate_limit::RateLimiters::new(),
     });
 
     #[allow(unused_mut)]

@@ -99,6 +99,7 @@ pub async fn configure_handler(
                 .configured
                 .set("genesis".to_string())
                 .map_err(|_| (StatusCode::CONFLICT, "already configured".to_string()))?;
+            let _ = state.configured_at.set(std::time::Instant::now());
 
             info!(
                 node_id = node_id,
@@ -117,6 +118,7 @@ pub async fn configure_handler(
                 .configured
                 .set("join".to_string())
                 .map_err(|_| (StatusCode::CONFLICT, "already configured".to_string()))?;
+            let _ = state.configured_at.set(std::time::Instant::now());
 
             info!("configured for join mode — waiting for /reshare/receive");
 
