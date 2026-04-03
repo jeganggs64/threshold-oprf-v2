@@ -67,8 +67,6 @@ pub struct NodeState {
     pub binary_hash: Option<String>,
     /// Per-device rate limiter for /partial-evaluate (max 5 evaluations per day).
     pub rate_limiter: rate_limit::RateLimiter,
-    /// Well-known config fetched at boot. None in dev/test mode (no --well-known-url).
-    pub well_known_config: Option<config::WellKnownConfig>,
     /// Directory for persisting key files. Defaults to current directory.
     pub data_dir: Option<String>,
     /// Guards against concurrent join operations (TOCTOU protection).
@@ -283,27 +281,6 @@ async fn main() {
     // -- Start outbound vsock bridges (Nitro only) --
     outbound_proxy::start_bridges();
 
-    // -- Fetch well-known config --
-    const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
-    let well_known_config = {
-        info!(url = WELL_KNOWN_URL, "fetching well-known config");
-        match config::fetch_well_known(WELL_KNOWN_URL).await {
-            Ok(cfg) => {
-                info!(
-                    version = cfg.version,
-                    threshold = cfg.threshold,
-                    nodes = cfg.nodes.len(),
-                    "well-known config loaded"
-                );
-                Some(cfg)
-            }
-            Err(e) => {
-                warn!(url = WELL_KNOWN_URL, error = %e, "failed to fetch well-known config — continuing without it");
-                None
-            }
-        }
-    };
-
     // Compute sha256 of own binary at boot (for attestation identity hash)
     let binary_hash = std::env::current_exe()
         .ok()
@@ -381,7 +358,6 @@ async fn main() {
         reshare_seen: std::sync::Mutex::new(Vec::with_capacity(64)),
         binary_hash,
         rate_limiter: rate_limit::RateLimiter::new(5, std::time::Duration::from_secs(86400)),
-        well_known_config,
         data_dir,
         join_in_progress: std::sync::Mutex::new(()),
         join_keypair,
