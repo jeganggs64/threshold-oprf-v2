@@ -259,6 +259,7 @@ async fn main() {
         configured: OnceLock::new(),
     });
 
+    #[allow(unused_mut)]
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/configure", post(configure::configure_handler))
