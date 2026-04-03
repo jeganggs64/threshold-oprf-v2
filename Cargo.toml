@@ -6,7 +6,6 @@ members = [
     "crates/node",
     "crates/reshare-cli",
     "crates/seal",
-    "verify",
 ]
 
 [workspace.dependencies]

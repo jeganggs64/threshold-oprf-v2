@@ -1,0 +1,37 @@
+name: Build Linux CLIs
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: Build Linux CLI Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl -p toprf-dkg-cli -p toprf-reshare-cli
+      - name: Collect binaries
+        run: |
+          mkdir -p artifacts
+          cp target/x86_64-unknown-linux-musl/release/toprf-dkg-cli artifacts/
+          cp target/x86_64-unknown-linux-musl/release/toprf-reshare-cli artifacts/
+          sha256sum artifacts/* | tee artifacts/hashes.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cli
+          path: artifacts/
+      - name: Package contracts for deployment
+        run: tar czf contracts.tar.gz -C contracts src script foundry.toml lib .env.example
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contracts
+          path: contracts.tar.gz
