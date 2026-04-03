@@ -30,6 +30,8 @@ pub struct AttestationPayload {
     pub client_data_hash: Option<String>, // hex sha256(blindedPoint)
     #[serde(default)]
     pub integrity_token: Option<String>, // Android: Play Integrity token
+    #[serde(default)]
+    pub device_id: Option<String>, // Android: stable device UUID for rate limiting
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -421,32 +423,38 @@ async fn verify_android(
         )));
     }
 
-    // Verify nonce matches expected_client_data_hash
+    // Extract device_id from the attestation payload (required for Android)
+    let device_id = payload
+        .device_id
+        .as_deref()
+        .ok_or(AttestationError::MissingField("device_id"))?;
+
+    // Verify nonce binding: the app computes SHA256(client_data_hash_hex + device_id)
+    // and uses that as the integrity token nonce. This binds device_id to the token
+    // so it can't be swapped after the fact.
     let nonce = token_payload
         .pointer("/requestDetails/nonce")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let expected_nonce =
-        base64::engine::general_purpose::STANDARD.encode(expected_client_data_hash);
-    if nonce != expected_nonce {
+    let client_data_hash_hex = hex::encode(expected_client_data_hash);
+    let expected_bound_nonce = hex::encode(Sha256::digest(
+        format!("{client_data_hash_hex}{device_id}").as_bytes(),
+    ));
+    if nonce != expected_bound_nonce {
         warn!(
-            expected = %expected_nonce,
+            expected = %expected_bound_nonce,
             got = %nonce,
-            "Play Integrity nonce mismatch"
+            "Play Integrity nonce mismatch (device_id binding)"
         );
         return Err(AttestationError::ClientDataHashMismatch);
     }
 
-    // TODO(android-device-id): The integrity token is unique per request, so this
-    // device_id_hash is per-request — rate limiting won't group requests by device.
-    // Fix: the app should include a stable `device_id` field (install UUID from
-    // secure storage) in the attestation payload, and the nonce should be
-    // SHA256(client_data_hash || device_id) so the device_id is bound to the
-    // integrity token and can't be swapped. Play Integrity proves the device is
-    // genuine, so the self-reported device_id is trustworthy.
-    // Until this is implemented, Android rate limiting is per-request.
-    let device_id_hash: [u8; 32] = Sha256::digest(integrity_token.as_bytes()).into();
+    // Device ID: SHA256 of the device_id (stable per device install).
+    // The device_id is bound to the integrity token via the nonce, so it can't
+    // be forged. Play Integrity proves the device is genuine and the app is
+    // unmodified, so the device_id from secure storage is trustworthy.
+    let device_id_hash: [u8; 32] = Sha256::digest(device_id.as_bytes()).into();
 
     Ok(AttestationResult { device_id_hash })
 }
