@@ -332,10 +332,17 @@ DEOF
     if [[ -n "$health" ]]; then
         echo "[${region}] Node $node_id deployed at $ip: $health"
     else
-        # SSH back in to start socat (may not have started if SSH dropped)
-        echo "[${region}] Reconnecting to start socat..."
+        # SSH back in to start socat + vsock-proxy (may not have started if SSH dropped)
+        echo "[${region}] Reconnecting to start proxies..."
         ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
             pgrep socat > /dev/null || nohup socat TCP-LISTEN:3001,fork,reuseaddr VSOCK-CONNECT:16:3001 > ~/proxy.log 2>&1 &
+            pgrep vsock-proxy > /dev/null || {
+                nohup vsock-proxy 8080 169.254.169.254 80 > ~/proxy-metadata.log 2>&1 &
+                nohup vsock-proxy 8443 sts.googleapis.com 443 > ~/proxy-google-sts.log 2>&1 &
+                nohup vsock-proxy 8444 playintegrity.googleapis.com 443 > ~/proxy-play-integrity.log 2>&1 &
+                nohup vsock-proxy 8445 ruonlabs.com 443 > ~/proxy-well-known.log 2>&1 &
+                nohup vsock-proxy 8446 iamcredentials.googleapis.com 443 > ~/proxy-google-iam.log 2>&1 &
+            }
         " 2>&1 || true
         sleep 15
         health=$(curl -sf --connect-timeout 5 "http://${ip}:3001/health" 2>/dev/null || echo "FAILED")
