@@ -250,6 +250,10 @@ memory_mib: 512
 cpu_count: 2
 AEOF
         sudo systemctl restart nitro-enclaves-allocator 2>&1 | tail -1
+
+        # Rate limit: 10 new connections per minute per IP on port 3001
+        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --set --name TOPRF
+        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name TOPRF -j DROP
     " 2>&1
 
     # Step 5: Upload artifacts
