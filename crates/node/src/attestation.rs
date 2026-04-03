@@ -309,17 +309,18 @@ fn verify_ios(
     }
 
     // Verify assertion signature: ECDSA-P256 over SHA256(authenticatorData || clientDataHash)
+    // Pass the raw concatenation to verify() — it computes SHA256 internally.
+    // Do NOT pre-hash: verify() would double-hash and reject valid signatures.
     let mut signed_data = Vec::with_capacity(assertion_auth_data.len() + 32);
     signed_data.extend_from_slice(&assertion_auth_data);
     signed_data.extend_from_slice(expected_client_data_hash);
-    let composite_hash = Sha256::digest(&signed_data);
 
     let signature = p256::ecdsa::DerSignature::from_bytes(&assertion_signature)
         .map_err(|e| AttestationError::Invalid(format!("invalid assertion signature DER: {e}")))?;
 
     use p256::ecdsa::signature::Verifier;
     verifying_key
-        .verify(&composite_hash, &signature)
+        .verify(&signed_data, &signature)
         .map_err(|e| {
             AttestationError::Invalid(format!("assertion signature verification failed: {e}"))
         })?;
@@ -421,6 +422,25 @@ async fn verify_android(
             "device integrity check failed: {:?}",
             device_verdicts
         )));
+    }
+
+    // Check request timestamp freshness (within 5 minutes)
+    if let Some(ts) = token_payload
+        .pointer("/requestDetails/timestampMillis")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let age_ms = now_ms.saturating_sub(ts);
+        if age_ms > 5 * 60 * 1000 {
+            return Err(AttestationError::Invalid(format!(
+                "integrity token too old: {}s",
+                age_ms / 1000
+            )));
+        }
     }
 
     // Extract device_id from the attestation payload (required for Android)

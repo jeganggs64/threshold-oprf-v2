@@ -135,12 +135,14 @@ pub fn build_proxied_client() -> Result<Client, reqwest::Error> {
 }
 
 /// Build a reqwest client for AWS instance metadata (HTTP, not HTTPS).
+/// Uses `imds.local` as a hostname alias because reqwest's `.resolve()`
+/// doesn't intercept raw IP addresses (it skips DNS resolution for them).
 #[cfg(target_os = "linux")]
 pub fn build_metadata_client() -> Result<Client, reqwest::Error> {
     Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .resolve(
-            "169.254.169.254",
+            "imds.local",
             format!("127.0.0.1:{PROXY_PORT_METADATA}").parse().unwrap(),
         )
         .build()

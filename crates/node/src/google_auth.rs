@@ -41,10 +41,22 @@ struct AwsCredentials {
 
 /// Fetch AWS credentials from the EC2 instance metadata service.
 /// In Nitro, this goes through the vsock proxy to the parent.
+///
+/// Uses `imds.local` as a hostname alias because reqwest's `.resolve()`
+/// doesn't intercept raw IP addresses — it skips DNS for them. The
+/// metadata client maps `imds.local` to `127.0.0.1:8080` (the vsock bridge),
+/// and the vsock-proxy on the parent forwards to `169.254.169.254:80`.
 async fn fetch_aws_credentials(client: &Client) -> Result<AwsCredentials, String> {
+    // Base URL: in Nitro, resolves to vsock bridge; outside Nitro, fails gracefully
+    let imds_base = if cfg!(target_os = "linux") {
+        "http://imds.local"
+    } else {
+        "http://169.254.169.254"
+    };
+
     // IMDSv2: get token first
     let token = client
-        .put("http://169.254.169.254/latest/api/token")
+        .put(format!("{imds_base}/latest/api/token"))
         .header("X-aws-ec2-metadata-token-ttl-seconds", "300")
         .send()
         .await
@@ -55,7 +67,9 @@ async fn fetch_aws_credentials(client: &Client) -> Result<AwsCredentials, String
 
     // Get IAM role name
     let role = client
-        .get("http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+        .get(format!(
+            "{imds_base}/latest/meta-data/iam/security-credentials/"
+        ))
         .header("X-aws-ec2-metadata-token", &token)
         .send()
         .await
@@ -69,7 +83,7 @@ async fn fetch_aws_credentials(client: &Client) -> Result<AwsCredentials, String
     // Get credentials
     let creds: AwsCredentials = client
         .get(format!(
-            "http://169.254.169.254/latest/meta-data/iam/security-credentials/{role}"
+            "{imds_base}/latest/meta-data/iam/security-credentials/{role}"
         ))
         .header("X-aws-ec2-metadata-token", &token)
         .send()
