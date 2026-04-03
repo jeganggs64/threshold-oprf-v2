@@ -1,0 +1,12 @@
+{
+  "commit": "28b430a4555770b888c5bfcb58e398c7dbe1705e",
+  "timestamp": "2026-04-03T17:26:15Z",
+  "rust_version": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "rust_commit": "e408947bfd200af42db322daf0fadfe7e26d3bd1",
+  "cargo_version": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+  "alpine_digest": "sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c",
+  "os": "Ubuntu 24.04.4 LTS",
+  "binary_sha256": "2200eeb1ef9f9e40489fbfaaeb6dda9b42f78e395993b59e84ed311bddb2045e",
+  "cargo_lock_sha256": "33f24e10d312bff3a296796bd2c03ce97829a78266b90bf163f20d1f057b3f2b",
+  "docker_image_sha256": "10b6b119adb04faca202fb473e46cbdc3a0d57f7ec579d835cb0c64071dcb3ee"
+}
