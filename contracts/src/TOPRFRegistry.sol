@@ -7,14 +7,14 @@ pragma solidity ^0.8.20;
 ///         Exists solely as public proof that DKG happened and no one held the master key.
 contract TOPRFRegistry {
     struct NodeRecord {
-        uint8   nodeId;
-        bytes   dkgCommitment;
-        bytes   attestationReport;
-        bytes   certChain;
-        bytes32 verificationShare;
+        uint8 nodeId;
+        bytes dkgCommitment;
+        bytes attestationReport;
+        bytes certChain;
+        bytes verificationShare;
     }
 
-    bytes32 public immutable groupPublicKey;
+    bytes   public groupPublicKey;
     string  public sourceRepo;
     uint8   public immutable threshold;
     uint8   public immutable nodeCount;
@@ -23,7 +23,7 @@ contract TOPRFRegistry {
     mapping(uint8 => NodeRecord) public nodes;
 
     constructor(
-        bytes32 _groupPublicKey,
+        bytes memory _groupPublicKey,
         string memory _sourceRepo,
         uint8 _threshold,
         NodeRecord[] memory _nodes

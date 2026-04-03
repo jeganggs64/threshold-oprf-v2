@@ -19,7 +19,7 @@ contract DeployScript is Script {
         // Read DKG data from JSON file
         string memory json = vm.readFile("dkg-data.json");
 
-        bytes32 groupPublicKey = vm.parseJsonBytes32(json, ".groupPublicKey");
+        bytes memory groupPublicKey = vm.parseJsonBytes(json, ".groupPublicKey");
         string memory sourceRepo = vm.parseJsonString(json, ".sourceRepo");
         uint8 threshold = uint8(vm.parseJsonUint(json, ".threshold"));
 
@@ -34,7 +34,7 @@ contract DeployScript is Script {
                 dkgCommitment: vm.parseJsonBytes(json, string.concat(prefix, ".dkgCommitment")),
                 attestationReport: vm.parseJsonBytes(json, string.concat(prefix, ".attestationReport")),
                 certChain: vm.parseJsonBytes(json, string.concat(prefix, ".certChain")),
-                verificationShare: vm.parseJsonBytes32(json, string.concat(prefix, ".verificationShare"))
+                verificationShare: vm.parseJsonBytes(json, string.concat(prefix, ".verificationShare"))
             });
         }
 
@@ -48,7 +48,6 @@ contract DeployScript is Script {
         vm.stopBroadcast();
 
         console.log("TOPRFRegistry deployed at:", address(registry));
-        console.log("Group public key:", vm.toString(groupPublicKey));
         console.log("Threshold:", threshold);
         console.log("Nodes:", nodeCount);
     }

@@ -343,10 +343,15 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
             if contracts_dir.exists() {
                 std::fs::copy(dkg_data_path, contracts_dir.join("dkg-data.json"))?;
 
-                // Write .env for forge
+                // Write .env for forge (add 0x prefix if missing — forge expects it)
+                let key_with_prefix = if key.starts_with("0x") {
+                    key.clone()
+                } else {
+                    format!("0x{key}")
+                };
                 std::fs::write(
                     contracts_dir.join(".env"),
-                    format!("DEPLOYER_PRIVATE_KEY={key}\nRPC_URL={rpc}\n"),
+                    format!("DEPLOYER_PRIVATE_KEY={key_with_prefix}\nRPC_URL={rpc}\n"),
                 )?;
 
                 // Try to run forge script
@@ -356,6 +361,8 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
 
                 let status = std::process::Command::new(&forge_path)
                     .current_dir(contracts_dir)
+                    .env("DEPLOYER_PRIVATE_KEY", &key_with_prefix)
+                    .env("RPC_URL", &rpc)
                     .args([
                         "script",
                         "script/Deploy.s.sol:DeployScript",
