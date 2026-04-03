@@ -38,6 +38,8 @@ p256 = { workspace = true }
 p384 = { workspace = true }
 x509-parser = { workspace = true }
 pem = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.6"

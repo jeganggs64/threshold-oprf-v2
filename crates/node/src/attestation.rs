@@ -343,12 +343,8 @@ async fn verify_android(
         .as_deref()
         .ok_or(AttestationError::MissingField("integrity_token"))?;
 
-    // Build the proxied HTTP client (routes through vsock in Nitro)
-    let client = outbound_proxy::build_proxied_client()
-        .map_err(|e| AttestationError::GoogleApiError(format!("client build failed: {e}")))?;
-
     // Get Google access token via WIF
-    let access_token = crate::google_auth::get_google_access_token(&client)
+    let access_token = crate::google_auth::get_google_access_token()
         .await
         .map_err(|e| AttestationError::GoogleApiError(format!("WIF auth failed: {e}")))?;
 
@@ -362,25 +358,11 @@ async fn verify_android(
         "integrity_token": integrity_token,
     });
 
-    let resp = client
-        .post(&url)
-        .bearer_auth(&access_token)
-        .json(&body)
-        .send()
+    let resp_body = outbound_proxy::https_post_json(&url, &body.to_string(), Some(&access_token))
         .await
         .map_err(|e| AttestationError::GoogleApiError(format!("API request failed: {e}")))?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(AttestationError::GoogleApiError(format!(
-            "API returned {status}: {body}"
-        )));
-    }
-
-    let result: serde_json::Value = resp
-        .json()
-        .await
+    let result: serde_json::Value = serde_json::from_str(&resp_body)
         .map_err(|e| AttestationError::GoogleApiError(format!("response parse: {e}")))?;
 
     // Validate the integrity verdict

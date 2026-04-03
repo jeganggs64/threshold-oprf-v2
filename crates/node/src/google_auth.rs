@@ -9,11 +9,12 @@
 //! No API keys or service account keys needed. Authentication is based on
 //! the EC2 instance's IAM role, federated to a Google service account.
 
-use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use tracing::info;
+
+use crate::outbound_proxy;
 
 /// Cached Google access token with expiry. Avoids 4 HTTP round-trips per request.
 static CACHED_TOKEN: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
@@ -41,13 +42,7 @@ struct AwsCredentials {
 
 /// Fetch AWS credentials from the EC2 instance metadata service.
 /// In Nitro, this goes through the vsock proxy to the parent.
-///
-/// Uses `imds.local` as a hostname alias because reqwest's `.resolve()`
-/// doesn't intercept raw IP addresses — it skips DNS for them. The
-/// metadata client maps `imds.local` to `127.0.0.1:8080` (the vsock bridge),
-/// and the vsock-proxy on the parent forwards to `169.254.169.254:80`.
-async fn fetch_aws_credentials(client: &Client) -> Result<AwsCredentials, String> {
-    // Base URL: in Nitro, resolves to vsock bridge; outside Nitro, fails gracefully
+async fn fetch_aws_credentials() -> Result<AwsCredentials, String> {
     let imds_base = if cfg!(target_os = "linux") {
         "http://imds.local"
     } else {
@@ -55,43 +50,33 @@ async fn fetch_aws_credentials(client: &Client) -> Result<AwsCredentials, String
     };
 
     // IMDSv2: get token first
-    let token = client
-        .put(format!("{imds_base}/latest/api/token"))
-        .header("X-aws-ec2-metadata-token-ttl-seconds", "300")
-        .send()
-        .await
-        .map_err(|e| format!("metadata token request failed: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("metadata token read failed: {e}"))?;
+    let token = outbound_proxy::http_put(
+        &format!("{imds_base}/latest/api/token"),
+        &[("X-aws-ec2-metadata-token-ttl-seconds", "300")],
+    )
+    .await
+    .map_err(|e| format!("metadata token: {e}"))?;
 
     // Get IAM role name
-    let role = client
-        .get(format!(
-            "{imds_base}/latest/meta-data/iam/security-credentials/"
-        ))
-        .header("X-aws-ec2-metadata-token", &token)
-        .send()
-        .await
-        .map_err(|e| format!("metadata role request failed: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("metadata role read failed: {e}"))?;
+    let role = outbound_proxy::http_get(
+        &format!("{imds_base}/latest/meta-data/iam/security-credentials/"),
+        &[("X-aws-ec2-metadata-token", token.trim())],
+    )
+    .await
+    .map_err(|e| format!("metadata role: {e}"))?;
 
     let role = role.trim();
 
     // Get credentials
-    let creds: AwsCredentials = client
-        .get(format!(
-            "{imds_base}/latest/meta-data/iam/security-credentials/{role}"
-        ))
-        .header("X-aws-ec2-metadata-token", &token)
-        .send()
-        .await
-        .map_err(|e| format!("metadata creds request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("metadata creds parse failed: {e}"))?;
+    let creds_json = outbound_proxy::http_get(
+        &format!("{imds_base}/latest/meta-data/iam/security-credentials/{role}"),
+        &[("X-aws-ec2-metadata-token", token.trim())],
+    )
+    .await
+    .map_err(|e| format!("metadata creds: {e}"))?;
+
+    let creds: AwsCredentials =
+        serde_json::from_str(&creds_json).map_err(|e| format!("metadata creds parse: {e}"))?;
 
     Ok(creds)
 }
@@ -174,10 +159,7 @@ struct StsTokenResponse {
 }
 
 /// Exchange an AWS subject token for a Google STS access token.
-async fn exchange_for_google_token(
-    client: &Client,
-    aws_subject_token: &str,
-) -> Result<String, String> {
+async fn exchange_for_google_token(aws_subject_token: &str) -> Result<String, String> {
     let audience = format!(
         "//iam.googleapis.com/projects/{GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/{WIF_POOL_ID}/providers/{WIF_PROVIDER_ID}"
     );
@@ -191,22 +173,11 @@ async fn exchange_for_google_token(
         "subject_token": aws_subject_token,
     });
 
-    let resp = client
-        .post(GOOGLE_STS_URL)
-        .json(&body)
-        .send()
+    let resp = outbound_proxy::https_post_json(GOOGLE_STS_URL, &body.to_string(), None)
         .await
         .map_err(|e| format!("Google STS request failed: {e}"))?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Google STS returned {status}: {body}"));
-    }
-
-    let sts_resp: StsTokenResponse = resp
-        .json()
-        .await
+    let sts_resp: StsTokenResponse = serde_json::from_str(&resp)
         .map_err(|e| format!("Google STS response parse failed: {e}"))?;
 
     // Exchange the STS token for a service account access token
@@ -219,21 +190,13 @@ async fn exchange_for_google_token(
         "scope": ["https://www.googleapis.com/auth/playintegrity"],
     });
 
-    let sa_resp = client
-        .post(&sa_url)
-        .bearer_auth(&sts_resp.access_token)
-        .json(&sa_body)
-        .send()
-        .await
-        .map_err(|e| format!("Google IAM generateAccessToken failed: {e}"))?;
-
-    let sa_status = sa_resp.status();
-    if !sa_status.is_success() {
-        let body = sa_resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "Google IAM generateAccessToken returned {sa_status}: {body}"
-        ));
-    }
+    let sa_resp = outbound_proxy::https_post_json(
+        &sa_url,
+        &sa_body.to_string(),
+        Some(&sts_resp.access_token),
+    )
+    .await
+    .map_err(|e| format!("Google IAM generateAccessToken failed: {e}"))?;
 
     #[derive(Deserialize)]
     struct GenerateAccessTokenResponse {
@@ -241,9 +204,7 @@ async fn exchange_for_google_token(
         access_token: String,
     }
 
-    let sa_token: GenerateAccessTokenResponse = sa_resp
-        .json()
-        .await
+    let sa_token: GenerateAccessTokenResponse = serde_json::from_str(&sa_resp)
         .map_err(|e| format!("Google IAM response parse failed: {e}"))?;
 
     Ok(sa_token.access_token)
@@ -255,12 +216,11 @@ async fn exchange_for_google_token(
 /// instance metadata (via separate metadata client routed through vsock),
 /// signs a GetCallerIdentity request, exchanges it for a Google access
 /// token via STS, then impersonates the service account.
-pub async fn get_google_access_token(client: &Client) -> Result<String, String> {
+pub async fn get_google_access_token() -> Result<String, String> {
     // Check cached token first
     {
         let cache = CACHED_TOKEN.lock().unwrap();
         if let Some((ref token, expiry)) = *cache {
-            // Reuse if more than 60 seconds until expiry
             if expiry > std::time::Instant::now() + std::time::Duration::from_secs(60) {
                 return Ok(token.clone());
             }
@@ -269,19 +229,9 @@ pub async fn get_google_access_token(client: &Client) -> Result<String, String> 
 
     info!("fetching Google access token via WIF");
 
-    // Use a dedicated metadata client for IMDS (routes 169.254.169.254 through vsock)
-    #[cfg(target_os = "linux")]
-    let metadata_client = crate::outbound_proxy::build_metadata_client()
-        .map_err(|e| format!("metadata client build failed: {e}"))?;
-    #[cfg(not(target_os = "linux"))]
-    let metadata_client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("metadata client build failed: {e}"))?;
-
-    let aws_creds = fetch_aws_credentials(&metadata_client).await?;
+    let aws_creds = fetch_aws_credentials().await?;
     let subject_token = generate_aws_subject_token(&aws_creds)?;
-    let google_token = exchange_for_google_token(client, &subject_token).await?;
+    let google_token = exchange_for_google_token(&subject_token).await?;
 
     info!("Google access token obtained");
 
