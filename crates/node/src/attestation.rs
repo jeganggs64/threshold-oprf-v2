@@ -72,8 +72,9 @@ pub async fn verify_attestation(
 // -- iOS App Attest --------------------------------------------------------
 
 /// Apple App Attest Root CA (PEM).
+/// Source: https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem
 const APPLE_APP_ATTEST_ROOT_CA: &str = r#"-----BEGIN CERTIFICATE-----
-MIICITCCAaegAwIBAgIQC/O+DkHN0uTkl2OKJPA/JDAKBggqhkjOPQQDAzBSMSYw
+MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw
 JAYDVQQDDB1BcHBsZSBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTETMBEGA1UECgwK
 QXBwbGUgSW5jLjETMBEGA1UECAwKQ2FsaWZvcm5pYTAeFw0yMDAzMTgxODMyNTNa
 Fw00NTAzMTUwMDAwMDBaMFIxJjAkBgNVBAMMHUFwcGxlIEFwcCBBdHRlc3RhdGlv
@@ -83,8 +84,8 @@ NbJhFs/Ii2FdCgAHGbpphY3+d8qjuDngIN3WVhQUBHAoMeQ/cLiP1sOUtgjqK9au
 Yen1mMEvRq9Sk3Jm5X8U62H+xTD3FE9TgS41o0IwQDAPBgNVHRMBAf8EBTADAQH/
 MB0GA1UdDgQWBBSskRBTM72+aEH/pwyp5frq5eWKoTAOBgNVHQ8BAf8EBAMCAQYw
 CgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn
-53O5+FRXgeLhd6gV0e4IN/95AjEAjW9l0+HAaFxCmPFhBRLn1Q+6Jm31bIBq1pLp
-jR2TFbc05GaETQvOSDYXMdH5
+53O5+FRXgeLhpJ06ysC5PrOyAjEAp5U4xDgEgllF7En3VcE3iexZZtKeYnpqtijV
+oyFraWVIyd/dganmrduC1bmTBGwD
 -----END CERTIFICATE-----"#;
 
 fn verify_ios(
@@ -519,4 +520,23 @@ fn cbor_map_get_array<'a>(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catches typos/hallucinations in the hardcoded Apple App Attest Root CA.
+    /// If this fails, update from https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem
+    #[test]
+    fn apple_app_attest_root_ca_parses() {
+        let pem = ::pem::parse(APPLE_APP_ATTEST_ROOT_CA).expect("PEM parse");
+        let (_, cert) = x509_parser::parse_x509_certificate(pem.contents())
+            .expect("DER parse");
+        let subject = cert.subject().to_string();
+        assert!(
+            subject.contains("Apple App Attestation Root CA"),
+            "unexpected subject: {subject}"
+        );
+    }
 }
