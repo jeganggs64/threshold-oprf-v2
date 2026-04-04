@@ -57,20 +57,29 @@ If the hashes match, the binary is identical to what CI produced.
 
 ## Step 3: Build the Docker image and EIF
 
+`nitro-cli` only runs on Amazon Linux with Nitro Enclave support. You need
+a temporary EC2 instance (c5a.xlarge or larger with `--enclave-options Enabled=true`)
+to build the EIF and get the PCR values.
+
 ```bash
-# Copy binary into the image directory
+# On your local machine: build the Docker image
 cp target/x86_64-unknown-linux-musl/release/toprf-node image/nitro/toprf-node
-
-# Build Docker image
 docker build -t toprf-node-enclave -f image/nitro/Dockerfile image/nitro/
+docker save toprf-node-enclave:latest | gzip > toprf-node-enclave.tar.gz
 
-# Build EIF (requires nitro-cli — run on an Amazon Linux instance or use Docker)
-nitro-cli build-enclave \
+# Upload to an EC2 instance with Nitro support
+scp toprf-node-enclave.tar.gz ec2-user@<instance-ip>:~
+
+# On the EC2 instance:
+sudo dnf install -y aws-nitro-enclaves-cli docker
+sudo systemctl enable --now docker
+sudo docker load < ~/toprf-node-enclave.tar.gz
+sudo nitro-cli build-enclave \
     --docker-uri toprf-node-enclave:latest \
     --output-file toprf-node.eif
 
-# Record the PCR values
-nitro-cli describe-eif --eif-path toprf-node.eif
+# Get the PCR values
+sudo nitro-cli describe-eif --eif-path toprf-node.eif
 ```
 
 Note the PCR0, PCR1, PCR2 values. These are deterministic — anyone building from the same commit + Rust version gets the same values.
@@ -81,7 +90,8 @@ Note the PCR0, PCR1, PCR2 values. These are deterministic — anyone building fr
 curl -s https://ruonlabs.com/.well-known/toprf-nodes.json | jq .
 ```
 
-Check that each node entry has:
+Compare every node's `measurements.pcr0`, `pcr1`, `pcr2` against your Step 3 values.
+All nodes use the same image, so all PCRs should be identical. Check that each node has:
 - `platform: "nitro"`
 - `measurements.pcr0`, `pcr1`, `pcr2` — compare against your Step 3 values
 - `verificationShare` — used in Step 6
