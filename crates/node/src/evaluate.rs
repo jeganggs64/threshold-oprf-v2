@@ -25,10 +25,13 @@ pub async fn partial_evaluate_handler(
     State(state): State<Arc<NodeState>>,
     Json(req): Json<PartialEvalRequest>,
 ) -> Result<Json<PartialEvaluation>, (StatusCode, Json<ErrorResponse>)> {
-    // 1. Compute expected client_data_hash = sha256(blinded_point_bytes)
-    let blinded_bytes = hex::decode(&req.blinded_point)
+    // 1. Validate blinded_point hex and compute expected client_data_hash.
+    //    iOS's @expo/app-integrity internally computes clientDataHash = SHA256(UTF-8 of challenge),
+    //    and the client passes blinded_point hex as the challenge. So expected_cdh must be
+    //    SHA256(UTF-8 bytes of the hex string), NOT SHA256(hex-decoded bytes).
+    hex::decode(&req.blinded_point)
         .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("invalid hex: {e}")))?;
-    let expected_cdh: [u8; 32] = Sha256::digest(&blinded_bytes).into();
+    let expected_cdh: [u8; 32] = Sha256::digest(req.blinded_point.as_bytes()).into();
 
     // 2. Verify device attestation (stateless)
     let att_result = attestation::verify_attestation(&req.attestation, &expected_cdh)
