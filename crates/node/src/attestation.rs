@@ -531,8 +531,7 @@ mod tests {
     #[test]
     fn apple_app_attest_root_ca_parses() {
         let pem = ::pem::parse(APPLE_APP_ATTEST_ROOT_CA).expect("PEM parse");
-        let (_, cert) = x509_parser::parse_x509_certificate(pem.contents())
-            .expect("DER parse");
+        let (_, cert) = x509_parser::parse_x509_certificate(pem.contents()).expect("DER parse");
         let subject = cert.subject().to_string();
         assert!(
             subject.contains("Apple App Attestation Root CA"),
