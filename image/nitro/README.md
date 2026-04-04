@@ -213,6 +213,30 @@ sudo nitro-cli build-enclave \
 All nodes use the same image — genesis vs join mode is configured at runtime
 via POST /configure from the DKG or reshare CLI.
 
+### POST /configure
+
+Called once per node. Returns 403 if already configured.
+
+**Genesis mode** (for DKG):
+```json
+POST /configure
+{
+  "mode": "genesis",
+  "node_id": 1,
+  "threshold": 2,
+  "total": 3
+}
+```
+
+**Join mode** (for resharing):
+```json
+POST /configure
+{ "mode": "join" }
+```
+
+The DKG and reshare CLIs handle this automatically — you don't need to call
+it manually unless debugging.
+
 ### Launch
 
 ```bash
