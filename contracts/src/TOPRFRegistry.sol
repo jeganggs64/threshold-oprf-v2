@@ -4,14 +4,13 @@ pragma solidity ^0.8.20;
 /// @title TOPRFRegistry
 /// @notice Immutable on-chain record of a FROST DKG ceremony.
 ///         All data is set in the constructor. No functions, no owner, no mutations.
-///         Exists solely as public proof that DKG happened and no one held the master key.
+///         Exists solely as public proof that DKG happened inside attested enclaves.
 contract TOPRFRegistry {
     struct NodeRecord {
         uint8 nodeId;
-        bytes dkgCommitment;
-        bytes attestationReport;
-        bytes certChain;
-        bytes verificationShare;
+        string dkgCommitment;         // FROST round 1 commitment (JSON)
+        string attestationDocument;    // Nitro COSE_Sign1 binding commitment to enclave (base64)
+        bytes verificationShare;       // compressed secp256k1 point (33 bytes)
     }
 
     bytes   public groupPublicKey;

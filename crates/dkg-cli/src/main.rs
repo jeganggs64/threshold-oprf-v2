@@ -46,6 +46,8 @@ enum Commands {
 struct Round1Response {
     identifier: String,
     package: String,
+    /// Nitro attestation document binding this commitment to the enclave.
+    attestation_document: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,6 +174,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
 
     let mut round1_identifiers: Vec<String> = Vec::with_capacity(n);
     let mut round1_packages: Vec<String> = Vec::with_capacity(n);
+    let mut round1_attestations: Vec<Option<String>> = Vec::with_capacity(n);
 
     for (i, url) in nodes.iter().enumerate() {
         let resp = client
@@ -182,15 +185,18 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
             .json::<Round1Response>()
             .await?;
 
+        let has_att = resp.attestation_document.is_some();
         println!(
-            "  Node {} ({}): identifier={}...",
+            "  Node {} ({}): identifier={}... attestation={}",
             i + 1,
             url,
-            &resp.identifier[..8.min(resp.identifier.len())]
+            &resp.identifier[..8.min(resp.identifier.len())],
+            if has_att { "yes" } else { "no (non-Nitro)" }
         );
 
         round1_identifiers.push(resp.identifier);
         round1_packages.push(resp.package);
+        round1_attestations.push(resp.attestation_document);
     }
 
     println!("[Round 1] Complete.\n");
@@ -351,12 +357,11 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
         "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
         "threshold": threshold,
         "nodeCount": round3_results.len(),
-        "nodes": round3_results.iter().map(|r3| {
+        "nodes": round3_results.iter().enumerate().map(|(i, r3)| {
             serde_json::json!({
                 "nodeId": r3.node_id,
-                "dkgCommitment": "0x",
-                "attestationReport": "0x",
-                "certChain": "0x",
+                "dkgCommitment": round1_packages.get(i).cloned().unwrap_or_default(),
+                "attestationDocument": round1_attestations.get(i).and_then(|a| a.clone()).unwrap_or_default(),
                 "verificationShare": format!("0x{}", r3.verification_share)
             })
         }).collect::<Vec<_>>()

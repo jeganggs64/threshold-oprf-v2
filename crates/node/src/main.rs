@@ -27,6 +27,7 @@ mod join;
 #[cfg(feature = "nitro")]
 mod nitro_endpoint;
 mod nitro_verify;
+pub mod nsm;
 pub mod outbound_proxy;
 mod rate_limit;
 mod reshare_handler;

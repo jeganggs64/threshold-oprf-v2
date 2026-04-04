@@ -62,6 +62,10 @@ impl DkgState {
 pub struct Round1Response {
     pub identifier: String,
     pub package: String,
+    /// Base64-encoded Nitro attestation document with user_data = SHA256(package).
+    /// Proves this commitment was generated inside an attested enclave.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation_document: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -173,11 +177,33 @@ pub async fn round1_handler(
         *guard = Some(package_json.clone());
     }
 
-    info!(node_id = dkg.node_id, "DKG round1 complete");
+    // Generate attestation document binding this commitment to this enclave.
+    // user_data = SHA256(round1_package_json) — proves this enclave produced this commitment.
+    let attestation_document = {
+        use sha2::{Digest, Sha256};
+        let commitment_hash = Sha256::digest(package_json.as_bytes());
+        match crate::nsm::request_attestation(Some(&commitment_hash), None, None) {
+            Ok(doc) => {
+                use base64::Engine;
+                Some(base64::engine::general_purpose::STANDARD.encode(&doc))
+            }
+            Err(e) => {
+                tracing::warn!("NSM attestation unavailable (non-Nitro?): {e}");
+                None
+            }
+        }
+    };
+
+    info!(
+        node_id = dkg.node_id,
+        has_attestation = attestation_document.is_some(),
+        "DKG round1 complete"
+    );
 
     Ok(Json(Round1Response {
         identifier: id_hex,
         package: package_json,
+        attestation_document,
     }))
 }
 
