@@ -221,6 +221,9 @@ for region in "${REGIONS[@]}"; do
     done
 done
 
+# Let instances fully settle before deploying
+sleep 10
+
 # ---------- Set up and deploy on each instance ----------
 
 setup_node() {
@@ -250,10 +253,6 @@ memory_mib: 512
 cpu_count: 2
 AEOF
         sudo systemctl restart nitro-enclaves-allocator 2>&1 | tail -1
-
-        # Rate limit: 10 new connections per minute per IP on port 3001
-        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --set --name TOPRF
-        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name TOPRF -j DROP
     " 2>&1
 
     # Step 5: Upload artifacts
@@ -344,16 +343,26 @@ for region in "${REGIONS[@]}"; do
     node_id=$((node_id + 1))
 done
 
-# ---------- Attach IAM instance profile ----------
+# ---------- Post-deploy: IAM + iptables ----------
 
 echo ""
-echo "=== Attaching IAM instance profile ==="
+echo "=== Attaching IAM instance profile + iptables rate limiting ==="
 for region in "${REGIONS[@]}"; do
+    ip="${NODE_IPS[$region]}"
+
+    # IAM instance profile
     aws ec2 associate-iam-instance-profile --region "$region" \
         --instance-id "${INSTANCE_IDS[$region]}" \
         --iam-instance-profile Name=toprf-node-profile > /dev/null 2>&1 \
-        && echo "[${region}] Attached toprf-node-profile" \
-        || echo "[${region}] Profile attachment skipped (may already be attached)"
+        && echo "[${region}] IAM profile attached" \
+        || echo "[${region}] IAM profile skipped"
+
+    # iptables rate limiting (10 new conn/min/IP on port 3001)
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_FILE" ec2-user@"$ip" "
+        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --set --name TOPRF 2>/dev/null
+        sudo iptables -A INPUT -p tcp --dport 3001 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name TOPRF -j DROP 2>/dev/null
+    " 2>&1 || true
+    echo "[${region}] iptables configured"
 done
 
 # ---------- Output ----------
