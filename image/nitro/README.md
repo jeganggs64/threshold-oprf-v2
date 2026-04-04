@@ -40,6 +40,46 @@ the attestation endpoint is not registered.
 - A wallet with Base Sepolia ETH (for on-chain registry deployment)
   - Get testnet ETH from a faucet (e.g. https://www.alchemy.com/faucets/base-sepolia)
 
+### One-time AWS + Google Cloud setup
+
+**AWS IAM** — EC2 instances need an IAM role for Workload Identity Federation:
+
+```bash
+# Create role (allows EC2 to assume it)
+aws iam create-role --role-name toprf-node-role \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "ec2.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+# Create instance profile and attach role
+aws iam create-instance-profile --instance-profile-name toprf-node-profile
+aws iam add-role-to-instance-profile \
+  --instance-profile-name toprf-node-profile \
+  --role-name toprf-node-role
+```
+
+The deploy script automatically attaches `toprf-node-profile` to launched instances.
+
+**Google Cloud WIF** — for Android Play Integrity verification via the enclave:
+
+1. Go to IAM & Admin → Workload Identity Federation → Create Pool
+   - Name: `aws-nitro-pool`, Provider: AWS, Account ID: your AWS account ID
+2. Add a provider: `aws-nitro-provider`, type AWS
+3. Grant the pool access to impersonate the Play Integrity service account:
+   - Service account: `play-integrity-verifier@ruonid.iam.gserviceaccount.com`
+   - Select "service account impersonation"
+   - Attribute: `aws_role`, Value: `arn:aws:sts::<account-id>:assumed-role/toprf-node-role`
+
+The enclave uses this to get a Google access token via WIF (AWS credentials →
+Google STS → service account impersonation) without any API keys or secrets
+in the image. The WIF pool/provider identifiers are hardcoded in the binary
+(they're public identifiers, not secrets).
+
 ### 1. Build the image (CI)
 
 Trigger: Actions -> "Build Nitro Enclave Image" -> Run workflow

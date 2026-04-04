@@ -163,6 +163,7 @@ for region in "${REGIONS[@]}"; do
         --security-group-ids "${SG_IDS[$region]}" \
         --associate-public-ip-address \
         --enclave-options Enabled=true \
+        --iam-instance-profile Name=toprf-node-profile \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=toprf-v2-nitro-${region}}]" \
         --query 'Instances[0].InstanceId' --output text)
     INSTANCE_IDS[$region]=$instance_id
