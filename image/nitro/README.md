@@ -113,11 +113,8 @@ The well-known endpoint (`/.well-known/toprf-nodes.json`) must follow this forma
 
 ```json
 {
-  "version": 1,
   "threshold": 2,
   "groupPublicKey": "03ab8d...",
-  "expectedBinaryHash": "sha256:...",
-  "approvedMeasurements": [],
   "registryContract": {
     "chain": "base-sepolia",
     "chainId": 84532,

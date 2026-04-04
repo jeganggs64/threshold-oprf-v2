@@ -2,14 +2,9 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WellKnownConfig {
-    pub version: u32,
     pub threshold: u16,
     #[serde(rename = "groupPublicKey")]
     pub group_public_key: String,
-    #[serde(rename = "expectedBinaryHash")]
-    pub expected_binary_hash: String,
-    #[serde(rename = "approvedMeasurements")]
-    pub approved_measurements: Vec<String>,
     pub nodes: Vec<NodeEntry>,
 }
 
@@ -25,18 +20,12 @@ pub struct NodeEntry {
     pub measurements: Option<PlatformMeasurements>,
 }
 
-/// Platform-specific attestation measurements.
-/// Which fields are present depends on the platform.
+/// Nitro Enclave PCR measurements.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlatformMeasurements {
-    // -- Nitro Enclave PCRs --
     pub pcr0: Option<String>,
     pub pcr1: Option<String>,
     pub pcr2: Option<String>,
-    // -- SNP / Azure CVM --
-    pub measurement: Option<String>,
-    #[serde(rename = "expectedBinaryHash")]
-    pub expected_binary_hash: Option<String>,
 }
 
 /// Fetch and parse the well-known config from a URL.
@@ -54,22 +43,16 @@ mod tests {
     #[test]
     fn test_parse_well_known_json() {
         let json = r#"{
-            "version": 1,
             "threshold": 2,
             "groupPublicKey": "02abc",
-            "expectedBinaryHash": "sha256:def",
-            "approvedMeasurements": ["sha384:aaa"],
             "nodes": [
                 {"id": 1, "url": "https://node1.example.com"},
                 {"id": 2, "url": "https://node2.example.com", "verificationShare": "03xyz"}
             ]
         }"#;
         let config: WellKnownConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.version, 1);
         assert_eq!(config.threshold, 2);
         assert_eq!(config.group_public_key, "02abc");
-        assert_eq!(config.expected_binary_hash, "sha256:def");
-        assert_eq!(config.approved_measurements.len(), 1);
         assert_eq!(config.nodes.len(), 2);
         assert_eq!(config.nodes[0].id, 1);
         assert!(config.nodes[0].verification_share.is_none());
@@ -77,13 +60,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_well_known_with_platform() {
+    fn test_parse_well_known_with_measurements() {
         let json = r#"{
-            "version": 1,
             "threshold": 2,
             "groupPublicKey": "02abc",
-            "expectedBinaryHash": "sha256:def",
-            "approvedMeasurements": [],
             "nodes": [
                 {
                     "id": 1,
@@ -93,15 +73,6 @@ mod tests {
                         "pcr0": "7eb77f79d944",
                         "pcr1": "4b4d5b3661b3",
                         "pcr2": "6248b22b95a0"
-                    }
-                },
-                {
-                    "id": 2,
-                    "url": "http://node2:3001",
-                    "platform": "snp",
-                    "measurements": {
-                        "measurement": "sha384:aaa",
-                        "expectedBinaryHash": "sha256:bbb"
                     }
                 }
             ]
@@ -113,11 +84,5 @@ mod tests {
         assert_eq!(m1.pcr0.as_deref(), Some("7eb77f79d944"));
         assert_eq!(m1.pcr1.as_deref(), Some("4b4d5b3661b3"));
         assert_eq!(m1.pcr2.as_deref(), Some("6248b22b95a0"));
-
-        let n2 = &config.nodes[1];
-        assert_eq!(n2.platform.as_deref(), Some("snp"));
-        let m2 = n2.measurements.as_ref().unwrap();
-        assert_eq!(m2.measurement.as_deref(), Some("sha384:aaa"));
-        assert_eq!(m2.expected_binary_hash.as_deref(), Some("sha256:bbb"));
     }
 }
