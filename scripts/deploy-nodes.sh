@@ -163,7 +163,6 @@ for region in "${REGIONS[@]}"; do
         --security-group-ids "${SG_IDS[$region]}" \
         --associate-public-ip-address \
         --enclave-options Enabled=true \
-        --iam-instance-profile Name=toprf-node-profile \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=toprf-v2-nitro-${region}}]" \
         --query 'Instances[0].InstanceId' --output text)
     INSTANCE_IDS[$region]=$instance_id
@@ -343,6 +342,18 @@ node_id=1
 for region in "${REGIONS[@]}"; do
     setup_node "$region" "${NODE_IPS[$region]}" "$node_id"
     node_id=$((node_id + 1))
+done
+
+# ---------- Attach IAM instance profile ----------
+
+echo ""
+echo "=== Attaching IAM instance profile ==="
+for region in "${REGIONS[@]}"; do
+    aws ec2 associate-iam-instance-profile --region "$region" \
+        --instance-id "${INSTANCE_IDS[$region]}" \
+        --iam-instance-profile Name=toprf-node-profile > /dev/null 2>&1 \
+        && echo "[${region}] Attached toprf-node-profile" \
+        || echo "[${region}] Profile attachment skipped (may already be attached)"
 done
 
 # ---------- Output ----------
