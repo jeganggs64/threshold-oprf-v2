@@ -99,12 +99,61 @@ After DKG, each node's health returns `{"status":"ready","node_id":N}`.
 # 1. Deploy a new node (same image — all nodes are identical)
 bash scripts/deploy-nodes.sh
 
-# 2. Update well-known config with the new node's URL, platform, and PCR values
-#    (PCR0, PCR1, PCR2 — same as all other nodes since the image is identical)
+# 2. Update well-known config (/.well-known/toprf-nodes.json) — add the new node
+#    with platform, all 3 PCR measurements, and no verificationShare (yet).
+#    PCR values are the same as existing nodes since the image is identical.
 
 # 3. Run reshare CLI (configures new node in join mode automatically)
 toprf-reshare-cli --new-node http://<new-ip>:3001
 ```
+
+### Well-known config format
+
+The well-known endpoint (`/.well-known/toprf-nodes.json`) must follow this format:
+
+```json
+{
+  "version": 1,
+  "threshold": 2,
+  "groupPublicKey": "03ab8d...",
+  "expectedBinaryHash": "sha256:...",
+  "approvedMeasurements": [],
+  "registryContract": {
+    "chain": "base-sepolia",
+    "chainId": 84532,
+    "address": "0x85B7..."
+  },
+  "sourceRepo": "https://github.com/jeganggs64/threshold-oprf-v2",
+  "nodes": [
+    {
+      "id": 1,
+      "url": "http://<ip>:3001",
+      "verificationShare": "02abc...",
+      "platform": "nitro",
+      "measurements": {
+        "pcr0": "abc123...",
+        "pcr1": "def456...",
+        "pcr2": "789abc..."
+      }
+    },
+    {
+      "id": 4,
+      "url": "http://<new-ip>:3001",
+      "platform": "nitro",
+      "measurements": {
+        "pcr0": "abc123...",
+        "pcr1": "def456...",
+        "pcr2": "789abc..."
+      }
+    }
+  ]
+}
+```
+
+Existing nodes have `verificationShare`. New join nodes don't (until resharing completes).
+The reshare CLI identifies existing vs new nodes by the presence of `verificationShare`.
+The `measurements` field must include all 3 PCR values for the reshare handler to verify
+the new node's attestation.
 
 ## Manual Deployment (step by step)
 
