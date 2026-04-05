@@ -229,7 +229,22 @@ fn verify_ios(
             "authData too short for attested cred data".into(),
         ));
     }
-    // aaguid is 16 bytes starting at att_cred_offset
+    // aaguid is 16 bytes starting at att_cred_offset. Apple App Attest uses:
+    //   "appattest" + 7 zero bytes  → production  (appattest.apple.com)
+    //   "appattestdevelop"          → development (appattestdevelop.apple.com)
+    // Both are accepted because locally-signed dev builds use the dev environment,
+    // while TestFlight/App Store builds use production. Any other value indicates
+    // a non-Apple-App-Attest attestation and must be rejected.
+    const AAGUID_PROD: &[u8; 16] = b"appattest\x00\x00\x00\x00\x00\x00\x00";
+    const AAGUID_DEV: &[u8; 16] = b"appattestdevelop";
+    let aaguid = &auth_data[att_cred_offset..att_cred_offset + 16];
+    if aaguid != AAGUID_PROD && aaguid != AAGUID_DEV {
+        return Err(AttestationError::Invalid(format!(
+            "unexpected aaguid: {}",
+            hex::encode(aaguid)
+        )));
+    }
+
     let cred_id_len = u16::from_be_bytes([
         auth_data[att_cred_offset + 16],
         auth_data[att_cred_offset + 17],
