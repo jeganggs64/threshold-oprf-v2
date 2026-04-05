@@ -324,22 +324,27 @@ fn verify_ios(
         ));
     }
 
-    // Verify assertion signature: ECDSA-P256 over SHA256(authenticatorData || clientDataHash)
-    // Pass the raw concatenation to verify() — it computes SHA256 internally.
-    // Do NOT pre-hash: verify() would double-hash and reject valid signatures.
-    let mut signed_data = Vec::with_capacity(assertion_auth_data.len() + 32);
-    signed_data.extend_from_slice(&assertion_auth_data);
-    signed_data.extend_from_slice(expected_client_data_hash);
+    // Verify assertion signature.
+    //
+    // Apple App Attest's Secure Enclave signs `message = nonce` where
+    //   nonce = SHA256(authenticatorData || clientDataHash)
+    // ECDSA pre-hashes its message input, so the signature is actually over
+    //   e = SHA256(nonce) = SHA256(SHA256(authenticatorData || clientDataHash))
+    //
+    // To verify, we compute the nonce and pass it as the message to p256.verify,
+    // which will hash it once more internally (matching what the Enclave signed).
+    let mut composite = Vec::with_capacity(assertion_auth_data.len() + 32);
+    composite.extend_from_slice(&assertion_auth_data);
+    composite.extend_from_slice(expected_client_data_hash);
+    let nonce: [u8; 32] = Sha256::digest(&composite).into();
 
-    let signature = p256::ecdsa::DerSignature::from_bytes(&assertion_signature)
+    let signature = p256::ecdsa::Signature::from_der(&assertion_signature)
         .map_err(|e| AttestationError::Invalid(format!("invalid assertion signature DER: {e}")))?;
 
     use p256::ecdsa::signature::Verifier;
-    verifying_key
-        .verify(&signed_data, &signature)
-        .map_err(|e| {
-            AttestationError::Invalid(format!("assertion signature verification failed: {e}"))
-        })?;
+    verifying_key.verify(&nonce, &signature).map_err(|e| {
+        AttestationError::Invalid(format!("assertion signature verification failed: {e}"))
+    })?;
 
     // Device ID: SHA256 of the credential public key (stable per device)
     let device_id_hash: [u8; 32] = Sha256::digest(&pub_key_uncompressed).into();
