@@ -1,4 +1,4 @@
-# RuonID — Passport-Based Sybil Resistance Without a Biometric Database
+# RuonID: Passport-Based Sybil Resistance Without a Biometric Database
 
 ## What it does
 
@@ -34,22 +34,22 @@ User's phone                          OPRF Nodes (2-of-N, AWS Nitro Enclaves)
 15. ruonId = keccak256(OPRF output)
 ```
 
-**The server never sees the passport data. The client never sees the key. The master key never existed — it was generated via FROST DKG. The node image is provably free of SSH or any remote access.**
+**The server never sees the passport data. The client never sees the key. The master key never existed. It was generated via FROST DKG. The node image is provably free of SSH or any remote access.**
 
-Same passport → same `ruonId` every time (sybil resistance). Different apps receive `SHA256(ruonId || developerId)` — deterministic but unlinkable across apps.
+Same passport → same `ruonId` every time (sybil resistance). Different apps receive `SHA256(ruonId || developerId)`, deterministic but unlinkable across apps.
 
 ## Sealed enclave nodes
 
-Each OPRF node runs inside an AWS Nitro Enclave — an isolated VM with no network interfaces, no SSH, no shell access. The only communication channel is vsock to the parent EC2 instance, which runs socat (inbound) and vsock-proxy (outbound).
+Each OPRF node runs inside an AWS Nitro Enclave, an isolated VM with no network interfaces, no SSH, no shell access. The only communication channel is vsock to the parent EC2 instance, which runs socat (inbound) and vsock-proxy (outbound).
 
 ```
 Enclave contents:
-  /toprf-node       — the TOPRF binary (static musl, PID 1 after exec)
-  /init.sh          — shell wrapper that exec's into the binary
-  /etc/ssl/certs/   — CA certificates for TLS
+  /toprf-node       # the TOPRF binary (static musl, PID 1 after exec)
+  /init.sh          # shell wrapper that exec's into the binary
+  /etc/ssl/certs/   # CA certificates for TLS
 ```
 
-All nodes boot from the same Docker image (pinned Alpine base). PCR values are deterministic — anyone building from the same source gets the same measurements.
+All nodes boot from the same Docker image (pinned Alpine base). PCR values are deterministic. Anyone building from the same source gets the same measurements.
 
 ## Key generation (FROST DKG)
 
@@ -62,7 +62,7 @@ The master key never exists. FROST Distributed Key Generation creates key shares
 5. CLI verifies all nodes agree on the group public key
 6. Optionally deploys on-chain registry to Base
 
-The CLI is a blind relay — it never sees plaintext key material. Key shares exist only in enclave memory (ephemeral).
+The CLI is a blind relay. It never sees plaintext key material. Key shares exist only in enclave memory (ephemeral).
 
 ## Attestation
 
@@ -84,7 +84,7 @@ Device attestation provides a stable device ID for rate limiting (10/day per dev
 
 ## On-chain registry
 
-The TOPRFRegistry contract on Base is immutable — all data set in the constructor, no owner, no mutations:
+The TOPRFRegistry contract on Base is immutable. All data set in the constructor, no owner, no mutations:
 - Group public key
 - Verification shares for each node
 - Source repository URL
@@ -118,7 +118,7 @@ Adding a new node without reconstructing the master key:
 - AWS Nitro hypervisor (same assumption as all confidential computing)
 
 **What users don't need to trust:**
-- RuonLabs (can't access keys — enclave isolation + DKG + identical attested images)
+- RuonLabs (can't access keys: enclave isolation + DKG + identical attested images)
 - Parent EC2 instance (can't read enclave memory, outbound TLS is end-to-end)
 - The well-known endpoint (verified against on-chain registry + live attestation)
 

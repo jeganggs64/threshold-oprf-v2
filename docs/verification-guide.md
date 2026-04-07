@@ -1,6 +1,6 @@
 # Independent Verification Guide
 
-How to independently verify that TOPRF nodes run the correct code and hold legitimate key shares — without trusting RuonLabs.
+How to independently verify that TOPRF nodes run the correct code and hold legitimate key shares, without trusting RuonLabs.
 
 ## What you're verifying
 
@@ -13,7 +13,7 @@ How to independently verify that TOPRF nodes run the correct code and hold legit
 
 - Rust toolchain (same version as recorded in `deployments/builds/`)
 - Docker
-- AWS CLI (for AMI lookup only — no credentials needed)
+- AWS CLI (for AMI lookup only, no credentials needed)
 - `nitro-cli` (install on any Amazon Linux instance, or use Docker)
 - `curl`, `jq`, `sha256sum`
 
@@ -82,7 +82,7 @@ sudo nitro-cli build-enclave \
 sudo nitro-cli describe-eif --eif-path toprf-node.eif
 ```
 
-Note the PCR0, PCR1, PCR2 values. These are deterministic — anyone building from the same commit + Rust version gets the same values.
+Note the PCR0, PCR1, PCR2 values. These are deterministic. Anyone building from the same commit + Rust version gets the same values.
 
 ## Step 4: Fetch the well-known config
 
@@ -93,8 +93,8 @@ curl -s https://ruonlabs.com/.well-known/toprf-nodes.json | jq .
 Compare every node's `measurements.pcr0`, `pcr1`, `pcr2` against your Step 3 values.
 All nodes use the same image, so all PCRs should be identical. Check that each node has:
 - `platform: "nitro"`
-- `measurements.pcr0`, `pcr1`, `pcr2` — compare against your Step 3 values
-- `verificationShare` — used in Step 6
+- `measurements.pcr0`, `pcr1`, `pcr2`: compare against your Step 3 values
+- `verificationShare`: used in Step 6
 
 ## Step 5: Get live attestation from each node
 
@@ -116,7 +116,7 @@ The response contains a `attestation_document` (base64-encoded COSE_Sign1) signe
 
 If PCRs match, the node is running exactly the binary you built.
 
-**Debug mode check:** If PCR0/1/2 are all zeros, the enclave is in debug mode — reject it.
+**Debug mode check:** If PCR0/1/2 are all zeros, the enclave is in debug mode. Reject it.
 
 ## Step 6: Verify DKG consistency
 
@@ -135,7 +135,7 @@ The group public key is also recorded in the on-chain registry contract (immutab
 
 ## Step 7: Verify on-chain registry
 
-The TOPRFRegistry contract on Base is immutable — no owner, no functions, no mutations after deployment. All data is in the constructor:
+The TOPRFRegistry contract on Base is immutable. No owner, no functions, no mutations after deployment. All data is in the constructor:
 
 ```bash
 # Read the contract (Base Sepolia example)
@@ -160,8 +160,8 @@ Compare the on-chain group public key with the well-known config and the value f
 
 ## What you're trusting
 
-- **AWS Nitro hypervisor** — that it correctly isolates enclave memory and signs attestation documents honestly
-- **The Rust compiler** — that it compiles the code correctly
-- **The secp256k1 curve** — standard cryptographic assumption
+- **AWS Nitro hypervisor**: that it correctly isolates enclave memory and signs attestation documents honestly
+- **The Rust compiler**: that it compiles the code correctly
+- **The secp256k1 curve**: standard cryptographic assumption
 
 You do NOT need to trust RuonLabs, the cloud provider's host OS, or the well-known endpoint (you verify everything independently).

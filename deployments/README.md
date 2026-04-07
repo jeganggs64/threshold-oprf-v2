@@ -17,6 +17,6 @@ step-by-step verification process.
 Summary:
 1. Check out the repo at the commit in the build record
 2. Build with the same Rust version
-3. Compare binary SHA256 — must match
-4. Build the Docker image + EIF — PCR values must match
-5. Verify live node attestation — PCR values must match your build
+3. Compare binary SHA256. Must match.
+4. Build the Docker image + EIF. PCR values must match.
+5. Verify live node attestation. PCR values must match your build.

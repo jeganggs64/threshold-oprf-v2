@@ -10,7 +10,7 @@ Outbound: Enclave -> vsock -> vsock-proxy (parent) -> internet (TLS end-to-end)
 - Parent: runs Amazon Linux, has SSH, runs socat (inbound) + vsock-proxy (outbound)
 - Enclave: runs Alpine + toprf-node binary, NO SSH, NO network interfaces, vsock only
 - Parent CANNOT access enclave memory (Nitro hypervisor isolation)
-- Outbound TLS is end-to-end (enclave to remote server) — parent is a dumb relay
+- Outbound TLS is end-to-end (enclave to remote server). Parent is a dumb relay.
 - vsock-proxy allowlist restricts outbound to AWS, Google, and ruonlabs.com
 
 ## Image
@@ -20,8 +20,8 @@ requires a minimal userspace to bootstrap the process. `FROM scratch` crashes.
 
 ```
 alpine:3.21 (pinned by digest)
-├── /toprf-node        — static musl binary (built with --features nitro)
-└── /etc/ssl/certs/    — CA certificates
+├── /toprf-node        # static musl binary (built with --features nitro)
+└── /etc/ssl/certs/    # CA certificates
 ```
 
 The default entrypoint is `toprf-node --join --port 3001`. For genesis mode,
@@ -42,7 +42,7 @@ the attestation endpoint is not registered.
 
 ### One-time AWS + Google Cloud setup
 
-**AWS IAM** — EC2 instances need an IAM role for Workload Identity Federation:
+**AWS IAM**: EC2 instances need an IAM role for Workload Identity Federation:
 
 ```bash
 # Create role (allows EC2 to assume it)
@@ -65,7 +65,7 @@ aws iam add-role-to-instance-profile \
 
 The deploy script automatically attaches `toprf-node-profile` to launched instances.
 
-**Google Cloud WIF** — for Android Play Integrity verification via the enclave:
+**Google Cloud WIF**: for Android Play Integrity verification via the enclave:
 
 1. Go to IAM & Admin → Workload Identity Federation → Create Pool
    - Name: `aws-nitro-pool`, Provider: AWS, Account ID: your AWS account ID
@@ -136,10 +136,10 @@ After DKG, each node's health returns `{"status":"ready","node_id":N}`.
 ### 5. Resharing (adding a new node)
 
 ```bash
-# 1. Deploy a new node (same image — all nodes are identical)
+# 1. Deploy a new node (same image, all nodes are identical)
 bash scripts/deploy-nodes.sh
 
-# 2. Update well-known config (/.well-known/toprf-nodes.json) — add the new node
+# 2. Update well-known config (/.well-known/toprf-nodes.json) - add the new node
 #    with platform, all 3 PCR measurements, and no verificationShare (yet).
 #    PCR values are the same as existing nodes since the image is identical.
 
@@ -200,7 +200,7 @@ If you prefer to deploy manually without the scripts, follow these steps.
 
 Requirements:
 - Instance type: c5a.xlarge (4 vCPU) or larger with Nitro Enclave support
-- c8a.large (2 vCPU) does NOT work — not enough CPUs for enclave allocator
+- c8a.large (2 vCPU) does NOT work. Not enough CPUs for enclave allocator.
 - `--enclave-options Enabled=true` at launch
 - Security group: ports 22 (SSH) + 3001 (node)
 
@@ -250,7 +250,7 @@ sudo nitro-cli build-enclave \
     --output-file ~/toprf-node.eif
 ```
 
-All nodes use the same image — genesis vs join mode is configured at runtime
+All nodes use the same image. Genesis vs join mode is configured at runtime
 via POST /configure from the DKG or reshare CLI.
 
 ### POST /configure
@@ -274,7 +274,7 @@ POST /configure
 { "mode": "join" }
 ```
 
-The DKG and reshare CLIs handle this automatically — you don't need to call
+The DKG and reshare CLIs handle this automatically. You don't need to call
 it manually unless debugging.
 
 ### Launch
@@ -322,7 +322,7 @@ curl -sf http://127.0.0.1:3001/health
 ## Debugging
 
 ```bash
-# Launch in debug mode (PCRs go to all zeros — testing only)
+# Launch in debug mode (PCRs go to all zeros, testing only)
 sudo nitro-cli run-enclave --eif-path ~/toprf-node.eif \
     --cpu-count 2 --memory 256 --enclave-cid 16 --debug-mode
 
@@ -343,32 +343,32 @@ cat ~/proxy.log
 
 ## Common Pitfalls
 
-1. **socat not installed** — Amazon Linux does not have socat by default.
+1. **socat not installed**: Amazon Linux does not have socat by default.
    The deploy script installs it, but if deploying manually, run `sudo dnf install socat`.
 
-2. **c8a.large (2 vCPU) doesn't work** — The Nitro allocator can't isolate
+2. **c8a.large (2 vCPU) doesn't work**: The Nitro allocator can't isolate
    CPUs with only 2 vCPUs. Use c5a.xlarge (4 vCPU) or larger.
 
-3. **Debug mode zeros all PCRs** — Never use `--debug-mode` in production.
+3. **Debug mode zeros all PCRs**: Never use `--debug-mode` in production.
    The reshare handler rejects all-zero PCRs.
 
-4. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
+4. **Keys are ephemeral**: Nitro enclaves have no persistent storage. If the
    enclave restarts, the key share is lost. Use resharing to recover.
 
-5. **No localhost in enclaves** — Nitro enclaves have no network interfaces at
+5. **No localhost in enclaves**: Nitro enclaves have no network interfaces at
    all, not even 127.0.0.1. Outbound connections use AF_VSOCK directly.
 
-6. **vsock-proxy must be running** — The outbound proxies (vsock-proxy) on the
+6. **vsock-proxy must be running**: The outbound proxies (vsock-proxy) on the
    parent must be started before the enclave can fetch well-known config or
    call Google APIs. The deploy script handles this.
 
-7. **SSH drops during enclave launch** — The enclave steals CPUs from the parent,
+7. **SSH drops during enclave launch**: The enclave steals CPUs from the parent,
    which can kill SSH sessions. The deploy script handles this by reconnecting.
 
-7. **Keys are ephemeral** — Nitro enclaves have no persistent storage. If the
+7. **Keys are ephemeral**: Nitro enclaves have no persistent storage. If the
    enclave restarts, the DKG key share is lost. Use resharing to restore.
 
-8. **No localhost in enclaves** — Nitro enclaves have no network interfaces at
+8. **No localhost in enclaves**: Nitro enclaves have no network interfaces at
    all, not even 127.0.0.1. The binary uses AF_VSOCK directly for outbound
    connections (not TCP localhost bridges).
 
@@ -378,13 +378,13 @@ Nitro Enclaves have zero network interfaces. The only communication is vsock.
 
 **Inbound** (clients reaching the enclave): `socat` on the parent bridges
 TCP:3001 to vsock CID 16 port 3001. socat is NOT pre-installed on Amazon
-Linux — install it with `dnf install socat`.
+Linux. Install it with `dnf install socat`.
 
 **Outbound** (enclave reaching the internet): `vsock-proxy` on the parent
 listens on vsock ports and forwards to specific TCP endpoints. The enclave
 connects via AF_VSOCK to CID 3 (parent), does TLS end-to-end with the
 remote server (rustls inside the enclave). The parent's vsock-proxy is a
-dumb byte relay — it cannot read or modify the encrypted traffic.
+dumb byte relay. It cannot read or modify the encrypted traffic.
 
 The vsock-proxy allowlist (`/etc/nitro_enclaves/vsock-proxy.yaml`) restricts
 which hosts the enclave can reach: AWS metadata, Google APIs, and ruonlabs.com.

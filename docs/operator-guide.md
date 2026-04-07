@@ -8,7 +8,7 @@ RuonID node pool.
 A Nitro Enclave containing the TOPRF node binary. The enclave:
 - Holds one FROST key share (received via resharing from existing nodes)
 - Serves partial OPRF evaluations with DLEQ proofs
-- Has no SSH, no shell, no network — only vsock to the parent EC2
+- Has no SSH, no shell, no network. Only vsock to the parent EC2.
 - Runs the same open-source image as all other nodes (verifiable via PCR values)
 
 ## Prerequisites
@@ -127,11 +127,11 @@ As an operator, you can independently verify:
 
 ## What you trust
 
-- **AWS Nitro hypervisor** — that it correctly isolates enclave memory
-- **RuonLabs** — only for well-known config management (adding/removing nodes)
-- **Google** — for Play Integrity verification (device attestation)
+- **AWS Nitro hypervisor**: that it correctly isolates enclave memory
+- **RuonLabs**: only for well-known config management (adding/removing nodes)
+- **Google**: for Play Integrity verification (device attestation)
 
-You do NOT need to trust RuonLabs with key material — the resharing protocol
+You do NOT need to trust RuonLabs with key material. The resharing protocol
 ensures your key share is encrypted to your enclave's ephemeral key and never
 visible to anyone.
 
@@ -139,7 +139,7 @@ visible to anyone.
 
 Use an elastic IP for your node so the well-known config URL survives
 instance restarts. If your enclave restarts (key lost), the existing nodes
-can reshare to you again at the same IP — no well-known config update needed.
+can reshare to you again at the same IP. No well-known config update needed.
 
 ## Monitoring
 
