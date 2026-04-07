@@ -169,7 +169,7 @@ pub fn hex_to_scalar(h: &str) -> Result<Scalar, TOPRFError> {
     Ok(scalar)
 }
 
-/// Like `hex_to_scalar` but allows zero — used for DLEQ proof components
+/// Like `hex_to_scalar` but allows zero. Used for DLEQ proof components
 /// where zero is theoretically valid (with negligible probability).
 pub fn hex_to_scalar_unrestricted(hex_str: &str) -> Result<Scalar, TOPRFError> {
     let bytes = hex::decode(hex_str).map_err(|e| TOPRFError::InvalidScalar(e.to_string()))?;

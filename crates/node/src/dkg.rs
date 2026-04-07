@@ -6,9 +6,9 @@
 //! operational mode.
 //!
 //! Endpoints:
-//!   POST /dkg/round1 — generate polynomial + commitment (FROST part1)
-//!   POST /dkg/round2 — receive round1 packages, produce round2 packages (FROST part2)
-//!   POST /dkg/round3 — receive round1+round2 packages, finalize key (FROST part3),
+//!   POST /dkg/round1: generate polynomial + commitment (FROST part1)
+//!   POST /dkg/round2: receive round1 packages, produce round2 packages (FROST part2)
+//!   POST /dkg/round3: receive round1+round2 packages, finalize key (FROST part3),
 //!                       seal key share, transition to normal mode
 
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ use crate::{LoadedKey, NodeState};
 // -- DKG state --
 
 /// Holds the FROST DKG state for genesis mode. Stored as
-/// `Option<Arc<DkgState>>` inside `NodeState` — `Some` only when the node
+/// `Option<Arc<DkgState>>` inside `NodeState`. `Some` only when the node
 /// was started with `--genesis`.
 pub struct DkgState {
     pub identifier: frost::Identifier,
@@ -117,13 +117,13 @@ fn require_dkg_state(
     if state.loaded_key.get().is_some() {
         return Err(error_response(
             StatusCode::FORBIDDEN,
-            "DKG already completed — key is sealed",
+            "DKG already completed, key is sealed",
         ));
     }
     state.dkg_state.get().ok_or_else(|| {
         error_response(
             StatusCode::NOT_FOUND,
-            "node is not in genesis mode — send POST /configure first",
+            "node is not in genesis mode. Send POST /configure first",
         )
     })
 }
@@ -178,7 +178,7 @@ pub async fn round1_handler(
     }
 
     // Generate attestation document binding this commitment to this enclave.
-    // user_data = SHA256(round1_package_json) — proves this enclave produced this commitment.
+    // user_data = SHA256(round1_package_json), proves this enclave produced this commitment.
     let attestation_document = {
         use sha2::{Digest, Sha256};
         let commitment_hash = Sha256::digest(package_json.as_bytes());
@@ -296,7 +296,7 @@ pub async fn round3_handler(
 ) -> Result<Json<Round3Response>, (StatusCode, Json<DkgErrorResponse>)> {
     let dkg = require_dkg_state(&state)?;
 
-    // Take the round2 secret (consumed — round3 can only be called once)
+    // Take the round2 secret (consumed; round3 can only be called once)
     let round2_secret = {
         let mut guard = dkg.round2_secret.lock().unwrap();
         guard.take().ok_or_else(|| {
@@ -441,14 +441,14 @@ pub async fn round3_handler(
     state.loaded_key.set(loaded).map_err(|_| {
         error_response(
             StatusCode::CONFLICT,
-            "key was set concurrently — node already initialized",
+            "key was set concurrently, node already initialized",
         )
     })?;
 
     info!(
         node_id = dkg.node_id,
         group_public_key = %gk_hex,
-        "DKG round3 complete — key share sealed and loaded, transitioning to normal mode"
+        "DKG round3 complete, key share sealed and loaded, transitioning to normal mode"
     );
 
     Ok(Json(Round3Response {

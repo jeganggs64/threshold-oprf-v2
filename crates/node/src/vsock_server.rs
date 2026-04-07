@@ -10,7 +10,7 @@ use tokio_vsock::{VsockAddr, VsockListener};
 use tower::Service;
 use tracing::{info, warn};
 
-/// CID_ANY (0xFFFFFFFF) — binds to any CID, which is standard for an
+/// CID_ANY (0xFFFFFFFF): binds to any CID, which is standard for an
 /// enclave that accepts connections from the parent instance.
 const VSOCK_CID_ANY: u32 = 0xFFFFFFFF;
 

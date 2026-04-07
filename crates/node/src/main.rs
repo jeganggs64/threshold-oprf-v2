@@ -1,4 +1,4 @@
-//! TOPRF node server — sealed TEE that evaluates partial OPRF requests.
+//! TOPRF node server: sealed TEE that evaluates partial OPRF requests.
 //!
 //! Every node is identical: it holds one key share and serves partial
 //! evaluations. The client collects threshold-many partial evaluations and
@@ -8,11 +8,11 @@
 //! is sent at runtime via POST /configure from the DKG CLI.
 //!
 //! Endpoints:
-//!   POST /configure       — set mode (genesis or join), called once
-//!   GET  /health          — liveness + key status
-//!   POST /partial-evaluate — partial OPRF evaluation
-//!   POST /reshare         — reshare donor
-//!   GET  /attestation     — TEE attestation (feature-gated: nitro or snp)
+//!   POST /configure        : set mode (genesis or join), called once
+//!   GET  /health           : liveness + key status
+//!   POST /partial-evaluate : partial OPRF evaluation
+//!   POST /reshare          : reshare donor
+//!   GET  /attestation      : TEE attestation (feature-gated: nitro or snp)
 //!
 //! Usage:
 //!   toprf-node --port 3001
@@ -71,11 +71,11 @@ pub struct NodeState {
     pub join_in_progress: std::sync::Mutex<()>,
     /// Ephemeral X25519 keypair for ECIES decryption (always generated at boot).
     pub join_keypair: (x25519_dalek::StaticSecret, x25519_dalek::PublicKey),
-    /// DKG state — set via /configure when mode is "genesis".
+    /// DKG state, set via /configure when mode is "genesis".
     pub dkg_state: OnceLock<Arc<dkg::DkgState>>,
-    /// Configuration mode — set once via /configure ("genesis" or "join").
+    /// Configuration mode, set once via /configure ("genesis" or "join").
     pub configured: OnceLock<String>,
-    /// When /configure was called — used to expire /join-info after 1 hour.
+    /// When /configure was called. Used to expire /join-info after 1 hour.
     pub configured_at: OnceLock<std::time::Instant>,
 }
 
@@ -274,7 +274,7 @@ async fn main() {
         )
         .route("/reshare", post(reshare_handler::reshare_handler))
         .route("/reshare/receive", post(join::reshare_receive_handler))
-        // DKG routes are always registered — they check dkg_state internally
+        // DKG routes are always registered; they check dkg_state internally
         .route("/dkg/round1", post(dkg::round1_handler))
         .route("/dkg/round2", post(dkg::round2_handler))
         .route("/dkg/round3", post(dkg::round3_handler));
@@ -305,7 +305,7 @@ async fn main() {
 
     let use_tcp = tcp_mode || !cfg!(target_os = "linux");
 
-    info!("node booted — waiting for POST /configure");
+    info!("node booted, waiting for POST /configure");
 
     match (tls_cert, tls_key) {
         (Some(cert_path), Some(key_path)) => {

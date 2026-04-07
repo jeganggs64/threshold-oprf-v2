@@ -2,7 +2,7 @@
 //!
 //! Devices are identified by a 32-byte hash derived from their attestation
 //! key. Counts are reset lazily when the epoch duration has elapsed since the
-//! device's epoch start — no background cleanup thread is required.
+//! device's epoch start. No background cleanup thread is required.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,7 +111,7 @@ mod tests {
         let id = device(2);
         assert!(rl.check_and_increment(&id).is_ok()); // 1st
         assert!(rl.check_and_increment(&id).is_ok()); // 2nd
-        let result = rl.check_and_increment(&id); // 3rd — should be rejected
+        let result = rl.check_and_increment(&id); // 3rd, should be rejected
         assert!(result.is_err(), "third request should be rate-limited");
         // retry_after should be positive and no more than the epoch duration
         let retry_after = result.unwrap_err();

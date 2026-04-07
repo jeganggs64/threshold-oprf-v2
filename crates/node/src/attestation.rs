@@ -1,7 +1,7 @@
 //! Device attestation verification for /partial-evaluate requests.
 //!
 //! Supports iOS (Apple App Attest) and Android (Google Play Integrity).
-//! Verification is stateless — the client sends full attestation data
+//! Verification is stateless: the client sends full attestation data
 //! with every request. A `device_id_hash` is derived from the attestation
 //! material and used for per-device rate limiting.
 

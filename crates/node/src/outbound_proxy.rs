@@ -40,9 +40,9 @@ const HOST_PORT_MAP: &[(&str, u32)] = &[
 /// No-op on non-Linux (bridges not needed, reqwest connects directly).
 pub fn start_bridges() {
     #[cfg(not(target_os = "linux"))]
-    info!("not in Nitro enclave — using direct TCP for outbound");
+    info!("not in Nitro enclave, using direct TCP for outbound");
     #[cfg(target_os = "linux")]
-    info!("Nitro enclave — outbound HTTPS will use vsock to parent CID 3");
+    info!("Nitro enclave, outbound HTTPS will use vsock to parent CID 3");
 }
 
 /// Make an HTTPS GET request, routing through vsock in Nitro or direct TCP otherwise.

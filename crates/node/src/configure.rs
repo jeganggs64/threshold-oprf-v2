@@ -1,6 +1,6 @@
 //! Runtime configuration endpoint.
 //!
-//! `POST /configure` — sets the node's mode (genesis or join) and parameters.
+//! `POST /configure`: sets the node's mode (genesis or join) and parameters.
 //! Can only be called once. After configuration, returns 403.
 //!
 //! This allows all nodes to boot from the same image (identical PCRs)
@@ -105,7 +105,7 @@ pub async fn configure_handler(
                 node_id = node_id,
                 threshold = threshold,
                 total = total,
-                "configured for genesis mode — DKG endpoints active"
+                "configured for genesis mode, DKG endpoints active"
             );
 
             Ok(Json(ConfigureResponse {
@@ -120,7 +120,7 @@ pub async fn configure_handler(
                 .map_err(|_| (StatusCode::CONFLICT, "already configured".to_string()))?;
             let _ = state.configured_at.set(std::time::Instant::now());
 
-            info!("configured for join mode — waiting for /reshare/receive");
+            info!("configured for join mode, waiting for /reshare/receive");
 
             Ok(Json(ConfigureResponse {
                 status: "configured".to_string(),

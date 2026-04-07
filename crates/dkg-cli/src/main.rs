@@ -1,4 +1,4 @@
-//! DKG CLI — orchestrates the FROST DKG ceremony.
+//! DKG CLI: orchestrates the FROST DKG ceremony.
 //!
 //! Each production node started with `--genesis` serves DKG endpoints
 //! (`/dkg/round1`, `/dkg/round2`, `/dkg/round3`). After round3, each node
@@ -72,7 +72,7 @@ struct Round3Request {
 // Round3 response types
 // ---------------------------------------------------------------------------
 
-/// Response from genesis-mode nodes (merged design) — no encrypted
+/// Response from genesis-mode nodes (merged design). No encrypted
 /// contributions, the node sealed its own key.
 #[derive(Deserialize)]
 struct Round3Response {
@@ -246,7 +246,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
     println!("[Round 2] Complete.\n");
 
     // ------------------------------------------------------------------
-    // Round 3: finalize — each node seals its own key share
+    // Round 3: finalize, each node seals its own key share
     // ------------------------------------------------------------------
     println!("[Round 3] Calling /dkg/round3 on each node (self-sealing mode)...");
 
@@ -287,7 +287,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
         let req = Round3Request {
             round1_packages: r1_map,
             round2_packages: r2_map,
-            production_pubkeys: None, // Not needed — node seals its own key
+            production_pubkeys: None, // Not needed, node seals its own key
         };
 
         let resp = client
@@ -379,7 +379,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
 
     if let (Some(key), Some(rpc)) = (deployer_key, rpc_url) {
         if key.is_empty() || rpc.is_empty() {
-            println!("\n  DEPLOYER_PRIVATE_KEY or RPC_URL is empty — skipping contract deployment");
+            println!("\n  DEPLOYER_PRIVATE_KEY or RPC_URL is empty, skipping contract deployment");
         } else {
             println!("\n[Deploy] Posting DKG record on-chain...");
             println!("  RPC: {rpc}");
@@ -389,7 +389,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
             if contracts_dir.exists() {
                 std::fs::copy(dkg_data_path, contracts_dir.join("dkg-data.json"))?;
 
-                // Write .env for forge (add 0x prefix if missing — forge expects it)
+                // Write .env for forge (add 0x prefix if missing; forge expects it)
                 let key_with_prefix = if key.starts_with("0x") {
                     key.clone()
                 } else {
@@ -441,7 +441,7 @@ async fn run_init_genesis(nodes: Vec<String>) -> Result<(), Box<dyn std::error::
                 // Clean up .env (don't leave private key on disk)
                 let _ = std::fs::remove_file(contracts_dir.join(".env"));
             } else {
-                println!("  WARNING: contracts/ directory not found — skipping deployment");
+                println!("  WARNING: contracts/ directory not found, skipping deployment");
                 println!("  Deploy manually with: cd contracts && bash deploy.sh");
             }
         }

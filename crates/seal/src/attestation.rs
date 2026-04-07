@@ -383,7 +383,7 @@ impl AttestationVerifier {
 
         // Select the ring verification algorithm based on the signature OID
         let algorithm: &dyn ring_sig::VerificationAlgorithm = match sig_alg_oid.as_str() {
-            // RSA-PSS (OID 1.2.840.113549.1.1.10) — need to check hash from params
+            // RSA-PSS (OID 1.2.840.113549.1.1.10): need to check hash from params
             "1.2.840.113549.1.1.10" => {
                 // Determine hash algorithm from PSS parameters.
                 // AMD VLEK chains use SHA-384, but we try to detect from the cert.
@@ -490,7 +490,7 @@ impl AttestationVerifier {
         )
         .map_err(|e| SealError::AttestationFailed(format!("invalid signature encoding: {e}")))?;
 
-        // Verify — the p384 crate handles hashing internally when using
+        // Verify: the p384 crate handles hashing internally when using
         // the `verify` method with the message (not pre-hashed).
         verifying_key
             .verify(&report.body_bytes, &signature)
@@ -507,7 +507,7 @@ impl AttestationVerifier {
     /// If the `AMD_ARK_FINGERPRINT` environment variable is set, compute the
     /// SHA-256 digest of the DER-encoded ARK certificate and compare it against
     /// the expected value. If the variable is not set, log a warning and allow
-    /// (defense in depth — operators should always pin in production).
+    /// (defense in depth; operators should always pin in production).
     fn verify_ark_fingerprint(ark_der: &[u8]) -> Result<(), SealError> {
         match std::env::var("AMD_ARK_FINGERPRINT") {
             Ok(expected_hex) => {
@@ -525,7 +525,7 @@ impl AttestationVerifier {
                 Ok(())
             }
             Err(_) => Err(SealError::AttestationFailed(
-                "AMD_ARK_FINGERPRINT env var is not set — ARK certificate pinning is \
+                "AMD_ARK_FINGERPRINT env var is not set. ARK certificate pinning is \
                      mandatory. Set this to the SHA-256 hex digest of the DER-encoded ARK \
                      certificate for your AMD product family."
                     .into(),
@@ -559,7 +559,7 @@ impl AttestationVerifier {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!(
-                    "AMD_CRL_PEM not set — skipping VCEK revocation check. \
+                    "AMD_CRL_PEM not set, skipping VCEK revocation check. \
                      Download the CRL from AMD KDS and set this env var for production."
                 );
                 return Ok(());

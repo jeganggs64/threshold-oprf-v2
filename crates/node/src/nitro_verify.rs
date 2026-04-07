@@ -137,13 +137,13 @@ pub fn check_pcrs(
 }
 
 /// Check that all PCR values in debug mode are NOT all zeros.
-/// Debug-mode enclaves zero all PCRs — reject these for resharing.
+/// Debug-mode enclaves zero all PCRs. Reject these for resharing.
 pub fn reject_debug_mode(attestation: &VerifiedAttestation) -> Result<(), String> {
     for idx in [0u32, 1, 2] {
         if let Some(pcr) = attestation.pcrs.get(&idx) {
             if pcr.iter().all(|&b| b == 0) {
                 return Err(format!(
-                    "PCR{idx} is all zeros — enclave is in debug mode, refusing reshare"
+                    "PCR{idx} is all zeros, enclave is in debug mode, refusing reshare"
                 ));
             }
         }
@@ -247,7 +247,7 @@ fn parse_claims(payload: &[u8]) -> Result<AttestationClaims, String> {
                 if let ciborium::Value::Bytes(b) = val {
                     user_data = Some(b.clone());
                 }
-                // Null means no user_data — leave as None
+                // Null means no user_data, leave as None
             }
             "nonce" => {
                 if let ciborium::Value::Bytes(b) = val {
@@ -357,7 +357,7 @@ fn verify_cert_chain(signing_cert_der: &[u8], cabundle: &[Vec<u8>]) -> Result<()
     }
 
     // Verify the last intermediate (or signing cert if no intermediates) is signed by root
-    // This is already handled by the loop above — the last iteration verifies against root_cert.
+    // This is already handled by the loop above. The last iteration verifies against root_cert.
 
     // Verify root cert is self-signed
     root_cert

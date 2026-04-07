@@ -19,7 +19,7 @@ use crate::outbound_proxy;
 /// Cached Google access token with expiry. Avoids 4 HTTP round-trips per request.
 static CACHED_TOKEN: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
 
-// -- WIF Configuration (hardcoded — these are identifiers, not secrets) --
+// -- WIF Configuration (hardcoded, these are identifiers, not secrets) --
 
 const GCP_PROJECT_NUMBER: &str = "648480773688";
 const WIF_POOL_ID: &str = "aws-nitro-pool";

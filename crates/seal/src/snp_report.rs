@@ -208,9 +208,9 @@ mod tests {
         report[0x040..0x048].copy_from_slice(&0x01u64.to_le_bytes());
         // flags
         report[0x048..0x04C].copy_from_slice(&0u32.to_le_bytes());
-        // report_data — fill with 0x42
+        // report_data: fill with 0x42
         report[0x050..0x090].copy_from_slice(&[0x42; 64]);
-        // measurement — fill with 0xDD
+        // measurement: fill with 0xDD
         report[0x090..0x0C0].copy_from_slice(&[0xDD; 48]);
         // host_data at 0x0C0 (32 bytes)
         report[0x0C0..0x0E0].copy_from_slice(&[0xEE; 32]);

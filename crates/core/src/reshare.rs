@@ -35,7 +35,7 @@ pub struct SerializableReshareContribution {
     pub from_node_id: NodeId,
     /// The target new node's ID.
     pub new_node_id: NodeId,
-    /// The sub-share data — either plaintext hex (64 chars) or base64 ECIES
+    /// The sub-share data, either plaintext hex (64 chars) or base64 ECIES
     /// ciphertext, depending on `encrypted`.
     pub sub_share_data: String,
     /// Whether `sub_share_data` is ECIES-encrypted.
@@ -135,7 +135,7 @@ pub fn decode_plaintext_sub_share(
 ) -> Result<Scalar, TOPRFError> {
     if contribution.encrypted {
         return Err(TOPRFError::InvalidInput(
-            "contribution is encrypted — cannot decode as plaintext".into(),
+            "contribution is encrypted, cannot decode as plaintext".into(),
         ));
     }
     hex_to_scalar(&contribution.sub_share_data)

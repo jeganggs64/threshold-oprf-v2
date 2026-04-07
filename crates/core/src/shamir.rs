@@ -99,13 +99,13 @@ pub fn split_key(
 
 /// Reconstruct the original secret from t-of-n shares (TESTING ONLY).
 ///
-/// This should NEVER be used in production — the whole point of threshold
+/// This should NEVER be used in production. The whole point of threshold
 /// OPRF is that the key is never reconstructed.
 #[cfg(test)]
 pub fn reconstruct_secret(shares: &[NodeKeyShare]) -> Result<Scalar, TOPRFError> {
     use crate::hex_to_scalar;
 
-    // reconstruct() expects &[KeyPackage] — convert our shares
+    // reconstruct() expects &[KeyPackage]; convert our shares
     // We re-split the original and use FROST's reconstruct for verification.
     // For a simpler approach, just do Lagrange interpolation directly on our scalars.
     let node_ids: Vec<u16> = shares.iter().map(|s| s.node_id).collect();

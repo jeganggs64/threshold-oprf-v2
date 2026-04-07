@@ -1,9 +1,9 @@
 //! Join mode endpoints for receiving key shares from donor nodes.
 //!
-//! `GET  /join-info` — returns the node's ephemeral X25519 public key so DKG
+//! `GET  /join-info`: returns the node's ephemeral X25519 public key so DKG
 //! nodes can ECIES-encrypt contributions directly to this production node.
 //!
-//! `POST /reshare/receive` — accepts encrypted or plaintext contributions from
+//! `POST /reshare/receive`: accepts encrypted or plaintext contributions from
 //! donor nodes, combines them using Lagrange interpolation, verifies against
 //! the group public key, and seals the resulting key share into node state.
 //!
@@ -32,7 +32,7 @@ pub struct JoinInfoResponse {
     pub ephemeral_pubkey: String,
 }
 
-/// GET /join-info — returns the node's ephemeral X25519 public key.
+/// GET /join-info: returns the node's ephemeral X25519 public key.
 ///
 /// Only available after /configure and for 1 hour. Returns 403 after expiry.
 pub async fn join_info_handler(
@@ -42,7 +42,7 @@ pub async fn join_info_handler(
     if state.configured.get().is_none() {
         return Err((
             StatusCode::NOT_FOUND,
-            "not configured — send POST /configure first".to_string(),
+            "not configured. Send POST /configure first".to_string(),
         ));
     }
 
@@ -90,7 +90,7 @@ pub struct ReshareReceiveResponse {
     pub status: String,
 }
 
-/// POST /reshare/receive — new node endpoint.
+/// POST /reshare/receive: new node endpoint.
 ///
 /// Combines contributions from donor nodes into a key share, verifies it
 /// against the group public key, writes it to disk, and loads it into state.
@@ -103,7 +103,7 @@ pub async fn reshare_receive_handler(
 
     // 1. Reject if already has a key
     if state.loaded_key.get().is_some() {
-        warn!("reshare/receive: node already has a key loaded — rejecting");
+        warn!("reshare/receive: node already has a key loaded, rejecting");
         return Err((
             StatusCode::FORBIDDEN,
             "node already has a key loaded".to_string(),
@@ -230,7 +230,7 @@ pub async fn reshare_receive_handler(
         )
     })?;
 
-    // 5. Save to disk (dev mode — production would seal)
+    // 5. Save to disk (dev mode; production would seal)
     let share_json = serde_json::to_vec_pretty(&key_share).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -268,12 +268,12 @@ pub async fn reshare_receive_handler(
     };
 
     state.loaded_key.set(loaded).map_err(|_| {
-        // This can only happen if another request raced us — still shouldn't happen
+        // This can only happen if another request raced us. Still shouldn't happen
         // given the check at the top, but handle it gracefully.
         warn!("reshare/receive: OnceLock already set (race condition)");
         (
             StatusCode::CONFLICT,
-            "key was set concurrently — node already initialized".to_string(),
+            "key was set concurrently, node already initialized".to_string(),
         )
     })?;
 

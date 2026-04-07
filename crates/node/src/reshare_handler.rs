@@ -1,6 +1,6 @@
 //! Share recovery endpoint for donor nodes.
 //!
-//! `POST /reshare` — accepts a new node's attestation data and X25519 public key.
+//! `POST /reshare`: accepts a new node's attestation data and X25519 public key.
 //! Independently verifies attestation based on the target node's platform
 //! (looked up from well-known config), generates a recovery contribution
 //! (Lagrange-weighted share), ECIES-encrypts it to the verified pubkey, and
@@ -10,7 +10,7 @@
 //! config to determine which attestation verification to apply (Nitro, SNP, etc.).
 //!
 //! Security: the donor node is the trust anchor. It verifies the target's
-//! attestation independently — the CLI/orchestrator is just a courier.
+//! attestation independently. The CLI/orchestrator is just a courier.
 
 use std::sync::Arc;
 
@@ -34,13 +34,13 @@ use crate::NodeState;
 pub struct ReshareRequest {
     /// The new node's X25519 public key (hex-encoded, 64 chars / 32 bytes).
     pub target_pubkey: String,
-    /// The new node's URL — used to look up platform and expected measurements
+    /// The new node's URL, used to look up platform and expected measurements
     /// from the well-known config.
     pub target_url: String,
     /// Base64-encoded attestation data from the target node.
     /// Format depends on platform: Nitro COSE_Sign1 document, SNP report, etc.
     pub attestation_data: String,
-    /// Base64-encoded certificate chain (SNP only — Nitro embeds certs in the
+    /// Base64-encoded certificate chain (SNP only; Nitro embeds certs in the
     /// COSE_Sign1 document). Optional, reserved for future SNP support.
     #[allow(dead_code)]
     pub cert_chain: Option<String>,
@@ -48,7 +48,7 @@ pub struct ReshareRequest {
     pub new_node_id: u16,
     /// IDs of all participating donor nodes (must include this node).
     pub participant_ids: Vec<u16>,
-    /// Group public key — donor verifies this matches its own.
+    /// Group public key. Donor verifies this matches its own.
     pub group_public_key: String,
 }
 
@@ -60,7 +60,7 @@ pub struct ReshareResponse {
     pub contribution: SerializableReshareContribution,
 }
 
-/// POST /reshare — donor node endpoint.
+/// POST /reshare: donor node endpoint.
 pub async fn reshare_handler(
     State(state): State<Arc<NodeState>>,
     Json(req): Json<ReshareRequest>,
@@ -147,7 +147,7 @@ pub async fn reshare_handler(
             (
                 StatusCode::FORBIDDEN,
                 format!(
-                    "target URL {} not found in well-known config — not an approved node",
+                    "target URL {} not found in well-known config, not an approved node",
                     req.target_url
                 ),
             )
@@ -173,7 +173,7 @@ pub async fn reshare_handler(
             verify_nitro_attestation(&attestation_bytes, &pubkey_bytes, target_entry)?;
         }
         "snp" | "azure-cvm" => {
-            // SNP/Azure verification — not yet implemented.
+            // SNP/Azure verification: not yet implemented.
             // When needed, move the old SNP logic here.
             return Err((
                 StatusCode::NOT_IMPLEMENTED,
@@ -208,7 +208,7 @@ pub async fn reshare_handler(
         seen.retain(|(_, ts)| now.duration_since(*ts) < crate::RESHARE_SEEN_TTL);
 
         if seen.iter().any(|(digest, _)| digest == &report_digest) {
-            warn!("reshare: duplicate attestation data — possible replay");
+            warn!("reshare: duplicate attestation data, possible replay");
             return Err((
                 StatusCode::CONFLICT,
                 "reshare request already processed for this attestation data".to_string(),
@@ -376,7 +376,7 @@ fn verify_nitro_attestation(
         None => {
             return Err((
                 StatusCode::FORBIDDEN,
-                "Nitro attestation has no user_data — cannot verify pubkey binding".to_string(),
+                "Nitro attestation has no user_data, cannot verify pubkey binding".to_string(),
             )
                 .into_response());
         }

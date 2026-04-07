@@ -128,7 +128,7 @@ pub fn get_derived_key(field_select: u64) -> Result<Zeroizing<[u8; 32]>, SealErr
         .map_err(|e| SealError::ProviderError(format!("failed to open /dev/sev-guest: {e}")))?;
 
     let mut req = SnpDerivedKeyReq {
-        root_key_select: 0, // VCEK — chip-unique root key
+        root_key_select: 0, // VCEK, chip-unique root key
         rsvd: 0,
         guest_field_select: field_select,
         vmpl: 0,
@@ -301,7 +301,7 @@ fn get_report_sev_guest(_report_data: Option<&[u8; 64]>) -> Result<SnpReport, Se
 }
 
 // ---------------------------------------------------------------------------
-// SNP_GET_EXT_REPORT — extended report with certificate chain
+// SNP_GET_EXT_REPORT: extended report with certificate chain
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
@@ -380,7 +380,7 @@ fn get_ext_report_sev_guest(
 
     if ret != 0 {
         let errno = std::io::Error::last_os_error();
-        // ENOSPC means our cert buffer was too small — retry with the size the kernel told us
+        // ENOSPC means our cert buffer was too small; retry with the size the kernel told us
         if errno.raw_os_error() == Some(libc::ENOSPC) && req.certs_len > cert_buf.len() as u32 {
             let needed = req.certs_len as usize;
             tracing::info!(

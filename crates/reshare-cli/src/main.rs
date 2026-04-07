@@ -1,4 +1,4 @@
-//! Reshare CLI — adds a new node to an existing TOPRF cluster.
+//! Reshare CLI: adds a new node to an existing TOPRF cluster.
 //!
 //! Fetches the well-known config to discover existing nodes, then orchestrates
 //! the reshare protocol: fetches attestation + join info from the new node,
@@ -197,7 +197,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
         .iter()
         .find(|n| n.url == new_node_url)
         .ok_or_else(|| {
-            format!("new node URL {new_node_url} not found in well-known config — add it first")
+            format!("new node URL {new_node_url} not found in well-known config. Add it first")
         })?;
 
     let new_node_id = new_node_entry.id;
@@ -226,7 +226,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
         if resp.status != "ready" {
             return Err(format!("node {} is not ready: {}", node.url, resp.status));
         }
-        println!("  {} (id={}) — ready", node.url, resp.node_id.unwrap_or(0));
+        println!("  {} (id={}): ready", node.url, resp.node_id.unwrap_or(0));
     }
 
     // 3. Configure new node in join mode (if not already configured)
@@ -327,7 +327,7 @@ async fn run_reshare(new_node_url: &str) -> Result<(), String> {
             .map_err(|e| format!("invalid reshare response from {}: {e}", node.url))?;
 
         println!(
-            "  {} (id={}) — contribution received (encrypted={})",
+            "  {} (id={}): contribution received (encrypted={})",
             node.url, reshare_resp.from_node_id, reshare_resp.encrypted
         );
 

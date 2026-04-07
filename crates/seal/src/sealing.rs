@@ -4,8 +4,8 @@
 //! ```text
 //! magic:        "SNPSEAL\0"  (8 bytes)
 //! version:      u32 LE       (4 bytes) = 2
-//! field_select: u64 LE       (8 bytes) — which fields were mixed into key derivation
-//! nonce:        [u8; 12]     (12 bytes — random AES-GCM nonce)
+//! field_select: u64 LE       (8 bytes), which fields were mixed into key derivation
+//! nonce:        [u8; 12]     (12 bytes, random AES-GCM nonce)
 //! ciphertext:   [u8; ...]    (encrypted data + 16-byte GCM auth tag)
 //! ```
 //! Total header: 32 bytes. AAD: first 20 bytes (magic + version + field_select).
@@ -133,7 +133,7 @@ pub fn unseal_derived(sealed_blob: &[u8], derived_key: &[u8; 32]) -> Result<Vec<
         )
         .map_err(|_| {
             SealError::UnsealingFailed(
-                "AES-GCM decryption failed — derived key mismatch or data corrupted".into(),
+                "AES-GCM decryption failed, derived key mismatch or data corrupted".into(),
             )
         })?;
 
@@ -142,7 +142,7 @@ pub fn unseal_derived(sealed_blob: &[u8], derived_key: &[u8; 32]) -> Result<Vec<
 
 /// Parse a sealed blob header to extract the field_select value.
 ///
-/// This is for display/logging only — it tells you which guest fields
+/// This is for display/logging only. It tells you which guest fields
 /// were mixed into the key derivation when the blob was sealed.
 pub fn parse_v2_header(blob: &[u8]) -> Result<u64, SealError> {
     if blob.len() < V2_HEADER_SIZE {

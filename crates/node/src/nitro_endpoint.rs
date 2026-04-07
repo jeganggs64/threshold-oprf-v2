@@ -2,8 +2,8 @@
 //!
 //! The client sends a random 32-byte nonce; the node generates a fresh Nitro
 //! attestation document (COSE_Sign1) with:
-//!   - user_data[0..32] = SHA-256(ephemeral X25519 pubkey) — key binding
-//!   - nonce = the client's nonce — freshness
+//!   - user_data[0..32] = SHA-256(ephemeral X25519 pubkey), key binding
+//!   - nonce = the client's nonce, freshness
 //!
 //! The COSE_Sign1 document is signed by the NSM (Nitro Security Module) and
 //! chains to the AWS Nitro Root CA. It contains PCR0/1/2 measurements that

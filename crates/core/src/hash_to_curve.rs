@@ -10,7 +10,7 @@
 //!
 //! NOTE: try-and-increment has a timing side-channel (the counter at which a valid
 //! point is found leaks through execution time). This is acceptable because the server
-//! never calls hash_to_curve on raw inputs — the client blinds the point before sending.
+//! never calls hash_to_curve on raw inputs; the client blinds the point before sending.
 //!
 //! This MUST produce identical outputs to the JS implementation in
 //! `app/lib/oprf.ts` and `server/src/oprf/utils.ts`.
