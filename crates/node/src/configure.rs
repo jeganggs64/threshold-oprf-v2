@@ -114,6 +114,18 @@ pub async fn configure_handler(
             }))
         }
         "join" => {
+            // Fetch well-known config so reshare/receive can verify donor identities
+            const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
+            let wk_config = crate::config::fetch_well_known(WELL_KNOWN_URL)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("failed to fetch well-known config: {e}"),
+                    )
+                })?;
+            let _ = state.well_known_config.set(wk_config);
+
             state
                 .configured
                 .set("join".to_string())

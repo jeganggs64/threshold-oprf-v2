@@ -77,6 +77,9 @@ pub struct NodeState {
     pub configured: OnceLock<String>,
     /// When /configure was called. Used to expire /join-info after 1 hour.
     pub configured_at: OnceLock<std::time::Instant>,
+    /// Well-known config, fetched during /configure in join mode.
+    /// Used to verify donor node identities during reshare/receive.
+    pub well_known_config: OnceLock<config::WellKnownConfig>,
 }
 
 #[allow(dead_code)]
@@ -261,6 +264,7 @@ async fn main() {
         dkg_state: OnceLock::new(),
         configured: OnceLock::new(),
         configured_at: OnceLock::new(),
+        well_known_config: OnceLock::new(),
     });
 
     #[allow(unused_mut)]

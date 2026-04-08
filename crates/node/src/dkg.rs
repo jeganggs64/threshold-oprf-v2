@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use toprf_core::{hex_to_scalar, NodeKeyShare};
+use zeroize::Zeroizing;
 
 use crate::{LoadedKey, NodeState};
 
@@ -137,7 +138,7 @@ pub async fn round1_handler(
 
     // Check if round1 was already run
     {
-        let guard = dkg.round1_package.lock().unwrap();
+        let guard = dkg.round1_package.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(error_response(
                 StatusCode::CONFLICT,
@@ -169,11 +170,11 @@ pub async fn round1_handler(
 
     // Store the secret and package
     {
-        let mut guard = dkg.round1_secret.lock().unwrap();
+        let mut guard = dkg.round1_secret.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(secret_package);
     }
     {
-        let mut guard = dkg.round1_package.lock().unwrap();
+        let mut guard = dkg.round1_package.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(package_json.clone());
     }
 
@@ -215,7 +216,7 @@ pub async fn round2_handler(
 
     // Take the round1 secret (consumed by part2)
     let secret_package = {
-        let mut guard = dkg.round1_secret.lock().unwrap();
+        let mut guard = dkg.round1_secret.lock().unwrap_or_else(|e| e.into_inner());
         guard.take().ok_or_else(|| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -262,7 +263,7 @@ pub async fn round2_handler(
 
     // Store the round2 secret for part3
     {
-        let mut guard = dkg.round2_secret.lock().unwrap();
+        let mut guard = dkg.round2_secret.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(round2_secret);
     }
 
@@ -298,7 +299,7 @@ pub async fn round3_handler(
 
     // Take the round2 secret (consumed; round3 can only be called once)
     let round2_secret = {
-        let mut guard = dkg.round2_secret.lock().unwrap();
+        let mut guard = dkg.round2_secret.lock().unwrap_or_else(|e| e.into_inner());
         guard.take().ok_or_else(|| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -406,15 +407,15 @@ pub async fn round3_handler(
     };
 
     // Seal to disk (same as join.rs)
-    let share_json = serde_json::to_vec_pretty(&node_key_share).map_err(|e| {
+    let share_json = Zeroizing::new(serde_json::to_string_pretty(&node_key_share).map_err(|e| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to serialize key share: {e}"),
         )
-    })?;
+    })?);
     let key_path = state.data_dir.as_deref().unwrap_or(".");
     let key_file = format!("{}/node-key.json", key_path);
-    std::fs::write(&key_file, &share_json).map_err(|e| {
+    std::fs::write(&key_file, share_json.as_bytes()).map_err(|e| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to write key to disk: {e}"),

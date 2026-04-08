@@ -201,7 +201,7 @@ pub async fn reshare_handler(
         arr
     };
     {
-        let mut seen = state.reshare_seen.lock().unwrap();
+        let mut seen = state.reshare_seen.lock().unwrap_or_else(|e| e.into_inner());
 
         // Evict entries older than TTL
         let now = std::time::Instant::now();
