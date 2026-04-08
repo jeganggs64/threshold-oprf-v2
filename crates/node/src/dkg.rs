@@ -407,12 +407,13 @@ pub async fn round3_handler(
     };
 
     // Seal to disk (same as join.rs)
-    let share_json = Zeroizing::new(serde_json::to_string_pretty(&node_key_share).map_err(|e| {
-        error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to serialize key share: {e}"),
-        )
-    })?);
+    let share_json =
+        Zeroizing::new(serde_json::to_string_pretty(&node_key_share).map_err(|e| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to serialize key share: {e}"),
+            )
+        })?);
     let key_path = state.data_dir.as_deref().unwrap_or(".");
     let key_file = format!("{}/node-key.json", key_path);
     std::fs::write(&key_file, share_json.as_bytes()).map_err(|e| {

@@ -101,7 +101,10 @@ pub async fn reshare_receive_handler(
     Json(req): Json<ReshareReceiveRequest>,
 ) -> Result<Json<ReshareReceiveResponse>, (StatusCode, String)> {
     // Hold the join lock for the entire operation to prevent TOCTOU races
-    let _join_lock = state.join_in_progress.lock().unwrap_or_else(|e| e.into_inner());
+    let _join_lock = state
+        .join_in_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // 1. Reject if already has a key
     if state.loaded_key.get().is_some() {
