@@ -23,6 +23,8 @@ use tracing::{info, warn};
 use toprf_core::reshare::{self, SerializableReshareContribution};
 use toprf_core::{hex_to_scalar, NodeKeyShare};
 
+use zeroize::Zeroizing;
+
 use crate::{LoadedKey, NodeState};
 
 /// Response body for GET /join-info.
@@ -99,7 +101,7 @@ pub async fn reshare_receive_handler(
     Json(req): Json<ReshareReceiveRequest>,
 ) -> Result<Json<ReshareReceiveResponse>, (StatusCode, String)> {
     // Hold the join lock for the entire operation to prevent TOCTOU races
-    let _join_lock = state.join_in_progress.lock().unwrap();
+    let _join_lock = state.join_in_progress.lock().unwrap_or_else(|e| e.into_inner());
 
     // 1. Reject if already has a key
     if state.loaded_key.get().is_some() {
@@ -139,6 +141,35 @@ pub async fn reshare_receive_handler(
         return Err((
             StatusCode::BAD_REQUEST,
             "total_shares must be nonzero".to_string(),
+        ));
+    }
+
+    // 2b. Verify each contributor's node_id exists in the well-known config
+    if let Some(wk_config) = state.well_known_config.get() {
+        for contribution in &req.contributions {
+            let known = wk_config
+                .nodes
+                .iter()
+                .any(|n| n.id == contribution.from_node_id);
+            if !known {
+                warn!(
+                    from_node_id = contribution.from_node_id,
+                    "reshare/receive: contributor node_id not found in well-known config"
+                );
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "contributor node_id {} is not in the well-known config",
+                        contribution.from_node_id
+                    ),
+                ));
+            }
+        }
+    } else {
+        warn!("reshare/receive: no well-known config available, cannot verify donor identities");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "well-known config not loaded; call /configure first".to_string(),
         ));
     }
 
@@ -231,15 +262,15 @@ pub async fn reshare_receive_handler(
     })?;
 
     // 5. Save to disk (dev mode; production would seal)
-    let share_json = serde_json::to_vec_pretty(&key_share).map_err(|e| {
+    let share_json = Zeroizing::new(serde_json::to_string_pretty(&key_share).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to serialize key share: {e}"),
         )
-    })?;
+    })?);
     let key_path = state.data_dir.as_deref().unwrap_or(".");
     let key_file = format!("{}/node-key.json", key_path);
-    std::fs::write(&key_file, &share_json).map_err(|e| {
+    std::fs::write(&key_file, share_json.as_bytes()).map_err(|e| {
         warn!("reshare/receive: failed to write {}: {e}", key_file);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
