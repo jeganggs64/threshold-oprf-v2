@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+pub const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WellKnownConfig {
     pub threshold: u16,
