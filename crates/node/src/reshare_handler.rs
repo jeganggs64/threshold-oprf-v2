@@ -123,8 +123,7 @@ pub async fn reshare_handler(
     // 6. Fetch fresh well-known config to look up the target node's platform.
     //    Fetched on each reshare request (not cached) because the new node's
     //    entry is added to well-known AFTER existing nodes are already running.
-    const WELL_KNOWN_URL: &str = "https://ruonlabs.com/.well-known/toprf-nodes.json";
-    let wk_config = crate::config::fetch_well_known(WELL_KNOWN_URL)
+    let wk_config = crate::config::fetch_well_known(crate::config::WELL_KNOWN_URL)
         .await
         .map_err(|e| {
             warn!(error = %e, "reshare: failed to fetch well-known config");
